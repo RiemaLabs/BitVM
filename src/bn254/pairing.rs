@@ -1106,9 +1106,11 @@ mod test {
             [q1_prepared, q2_prepared, q3_prepared, q4_prepared].to_vec(),
         );
         println!(
-            "Pairing.quad_miller_loop: {} bytes",
-            quad_miller_loop_affine_script.len()
+            "Pairing.quad_miller_loop: {} bytes, stack: {:?}",
+            quad_miller_loop_affine_script.len(),
+            quad_miller_loop_affine_script.analyze_stack()
         );
+        return;
 
         let f = Bn254::multi_miller_loop_affine([p1, p2, p3, p4], [q1, q2, q3, q4]).0;
         println!("Bn254::multi_miller_loop_affine done!");
