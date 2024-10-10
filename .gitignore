@@ -29,3 +29,5 @@ tmp
 
 # Bridge public and private files
 bridge_data/
+
+data/

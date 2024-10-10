@@ -1,3 +1,4 @@
+use crate::dump::*;
 use num_bigint::BigUint;
 use num_traits::Num;
 use std::str::FromStr;
@@ -120,7 +121,8 @@ impl<const N_BITS: u32, const LIMB_SIZE: u32> BigIntImpl<N_BITS, LIMB_SIZE> {
                 }
                 OP_1SUB OP_PICK
             }
-        }.add_stack_hint(-(Self::N_LIMBS as i32), Self::N_LIMBS as i32)
+        }
+        .add_stack_hint(-(Self::N_LIMBS as i32), Self::N_LIMBS as i32)
     }
 
     pub fn roll(mut a: u32) -> Script {
@@ -238,7 +240,6 @@ impl<const N_BITS: u32, const LIMB_SIZE: u32> BigIntImpl<N_BITS, LIMB_SIZE> {
         }
     }
 
-
     pub fn is_negative(depth: u32) -> Script {
         script! {
             { (1 + depth) * Self::N_LIMBS - 1 } OP_PICK
@@ -257,7 +258,7 @@ impl<const N_BITS: u32, const LIMB_SIZE: u32> BigIntImpl<N_BITS, LIMB_SIZE> {
     }
 
     /// Resize positive numbers
-    /// 
+    ///
     /// # Note
     ///
     /// Does not work for negative numbers
@@ -286,17 +287,33 @@ impl<const N_BITS: u32, const LIMB_SIZE: u32> BigIntImpl<N_BITS, LIMB_SIZE> {
             }
         }
     }
+
+    pub fn push_verification_meta(meta: MetaType) -> Script {
+        match meta {
+            MetaType::SymbolicVar(i) => {
+                writein_verified_meta(format!("push_symbolic_variable({})", i));
+            }
+            MetaType::Assertion(_assertion) => {}
+        }
+
+        // NOTE: The deprecated instruction OP_SUBSTR, which was previously used in
+        // Pomelo as a backend directive for generating annotation for verification,
+        // should be replaced with alternative methods in future implementations.
+        script! {
+            OP_SUBSTR
+        }
+    }
 }
 
 #[cfg(test)]
 mod test {
     use crate::bigint::{BigIntImpl, U254};
+
     use crate::run;
-    use crate::treepp::execute_script;
+    // use crate::treepp::execute_script;
     use bitcoin_script::script;
     use rand::{Rng, SeedableRng};
     use rand_chacha::ChaCha20Rng;
-
     #[test]
     fn test_zip() {
         const N_BITS: u32 = 1450;

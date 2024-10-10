@@ -23,6 +23,9 @@ pub mod signatures;
 pub mod u32;
 pub mod u4;
 
+// An exporter that outputs Script in the Polemo-compatible format
+mod dump;
+
 /// A wrapper for the stack types to print them better.
 pub struct FmtStack(Stack);
 impl fmt::Display for FmtStack {
