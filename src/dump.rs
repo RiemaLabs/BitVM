@@ -237,8 +237,8 @@ mod test {
 
     #[test]
     fn test_less_than() {
-        let num_a: u64 = 0x8000000000000001;
-        let num_b: u64 = 0x0000000000000000;
+        let num_a: u64 = 0x00000000000000FF;
+        let num_b: u64 = 0xFF00000000000000;
         let script = script! {
             {U64::push_u64_le(&[num_a])}
             {U64::push_u64_le(&[num_b])}
