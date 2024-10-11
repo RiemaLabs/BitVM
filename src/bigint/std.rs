@@ -291,9 +291,17 @@ impl<const N_BITS: u32, const LIMB_SIZE: u32> BigIntImpl<N_BITS, LIMB_SIZE> {
     pub fn push_verification_meta(meta: MetaType) -> Script {
         match meta {
             MetaType::SymbolicVar(i) => {
-                writein_verified_meta(format!("push_symbolic_variable({})", i));
+                writein_verified_meta(format!(
+                    "PUSH_BIGINT_{} {} {} limbs{}",
+                    i,
+                    Self::N_BITS,
+                    LIMB_SIZE,
+                    i
+                ));
             }
-            MetaType::Assertion(_assertion) => {}
+            MetaType::Assertion(index, expr) => {
+                writein_verified_meta(format!("ASSERT_{} {{ {} }}", index, expr.to_string()));
+            }
         }
 
         // NOTE: The deprecated instruction OP_SUBSTR, which was previously used in
