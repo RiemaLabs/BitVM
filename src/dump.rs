@@ -133,6 +133,14 @@ impl ConstraintBuilder {
         self.build_rel(symbol_var_expr, expr, rel)
     }
 
+    pub fn build_mul_expr(&self, expr: ValueExpr, expr1: ValueExpr) -> ValueExpr {
+        ValueExpr::Mul(Box::new(expr), Box::new(expr1))
+    }
+
+    pub fn build_add_expr(&self, expr: ValueExpr, expr1: ValueExpr) -> ValueExpr {
+        ValueExpr::Add(Box::new(expr), Box::new(expr1))
+    }
+
     pub fn build_check_top(&mut self) {
         let expr: BoolExpr = self.build_stack_rel(0, self.build_constant(1), RelOp::Eq);
         self.build_assertion(expr);
@@ -187,7 +195,7 @@ impl ConstraintBuilder {
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::bigint::{U254, U64};
+    use crate::bigint::U254;
     use bitcoin_script::builder::Block;
     use bitcoin_script::Script;
     use bitcoin_script::*;
@@ -452,6 +460,19 @@ mod test {
     }
 
     #[test]
+    fn check_copy_zip() {
+        pre_process("../data/copy_zip.bs");
+        let a = 1;
+        let b = 0;
+        let script = script! {
+            {U254::push_verification_meta(MetaType::SymbolicVar(0))}
+            {U254::push_verification_meta(MetaType::SymbolicVar(1))}
+            {U254::copy_zip(a, b)}
+        };
+        dump_script(&script);
+    }
+
+    #[test]
     fn check_equalverify() {
         pre_process("../data/equalverify.bs");
         let mut builder = ConstraintBuilder::new();
@@ -583,4 +604,138 @@ mod test {
         };
         dump_script(&script);
     }
+
+    #[test]
+    fn check_double() {
+        pre_process("../data/add/double.bs");
+        let mut builder = ConstraintBuilder::new();
+        let assertion = builder.build_stack_rel(
+            0,
+            builder.build_mul_expr(builder.build_symbolic(0), builder.build_constant(2)),
+            RelOp::Eq,
+        );
+        builder.build_assertion(assertion);
+        let script = script! {
+            {U254::push_verification_meta(MetaType::SymbolicVar(0))}
+            {U254::double(0)}
+            {add_assertions(&builder)}
+        };
+        dump_script(&script);
+    }
+
+    #[test]
+    fn check_add() {
+        pre_process("../data/add/add.bs");
+        let mut builder = ConstraintBuilder::new();
+        let assertion = builder.build_stack_rel(
+            0,
+            builder.build_add_expr(builder.build_symbolic(0), builder.build_symbolic(1)),
+            RelOp::Eq,
+        );
+        builder.build_assertion(assertion);
+        let script = script! {
+            {U254::push_verification_meta(MetaType::SymbolicVar(0))}
+            {U254::push_verification_meta(MetaType::SymbolicVar(1))}
+            {U254::add(1,0)}
+            {add_assertions(&builder)}
+        };
+        dump_script(&script);
+    }
+
+    #[test]
+    fn check_add1() {
+        pre_process("../data/add/add1.bs");
+        let mut builder = ConstraintBuilder::new();
+        let assertion = builder.build_stack_rel(
+            0,
+            builder.build_add_expr(builder.build_symbolic(0),builder.build_constant(1)),
+            RelOp::Eq,
+        );
+        builder.build_assertion(assertion);
+        let script = script! {
+            {U254::push_verification_meta(MetaType::SymbolicVar(0))}
+            {U254::add1()}
+            {add_assertions(&builder)}
+        };
+        dump_script(&script);
+    }
+
+    #[test]
+    fn check_double_allow_overflow() {
+        pre_process("../data/add/double_allow_overflow.bs");
+        let mut builder = ConstraintBuilder::new();
+        let assertion = builder.build_stack_rel(
+            0,
+            builder.build_mul_expr(builder.build_symbolic(0),builder.build_constant(2)),
+            RelOp::Eq,
+        );
+        // TODO : Model Overflow in Assertion
+        builder.build_assertion(assertion);
+        let script = script! {
+            {U254::push_verification_meta(MetaType::SymbolicVar(0))}
+            {U254::double_allow_overflow()}
+            {add_assertions(&builder)}
+        };
+        dump_script(&script);
+    }
+
+    #[test]
+    fn check_double_allow_overflow_keep_element() {
+        pre_process("../data/add/double_allow_overflow_keep_element.bs");
+        let mut builder = ConstraintBuilder::new();
+        let assertion = builder.build_stack_rel(
+            0,
+            builder.build_mul_expr(builder.build_symbolic(0),builder.build_constant(2)),
+            RelOp::Eq,
+        );
+        // TODO : Model Overflow in Assertion
+        // TODO : Model Keep Element here
+        builder.build_assertion(assertion);
+        let script = script! {
+            {U254::push_verification_meta(MetaType::SymbolicVar(0))}
+            {U254::double_allow_overflow_keep_element(0)}
+            {add_assertions(&builder)}
+        };
+        dump_script(&script);
+    }
+
+    #[test]
+    fn check_double_prevent_overflow() {
+        pre_process("../data/add/double_prevent_overflow.bs");
+        let mut builder = ConstraintBuilder::new();
+        let assertion = builder.build_stack_rel(
+            0,
+            builder.build_mul_expr(builder.build_symbolic(0),builder.build_constant(2)),
+            RelOp::Eq,
+        );
+        // TODO : Model Prevent Overflow in Assertion
+        builder.build_assertion(assertion);
+        let script = script! {
+            {U254::push_verification_meta(MetaType::SymbolicVar(0))}
+            {U254::double_prevent_overflow()}
+            {add_assertions(&builder)}
+        };
+        dump_script(&script);
+    }
+
+    #[test]
+    fn check_add_ref_with_top(){
+        pre_process("../data/add/double_prevent_overflow.bs");
+        let mut builder = ConstraintBuilder::new();
+        let assertion = builder.build_stack_rel(
+            0,
+            builder.build_mul_expr(builder.build_symbolic(0),builder.build_constant(2)),
+            RelOp::Eq,
+        );
+        // TODO : Model Prevent Overflow in Assertion
+        builder.build_assertion(assertion);
+        let script = script! {
+            {U254::push_verification_meta(MetaType::SymbolicVar(0))}
+            {U254::double_prevent_overflow()}
+            {add_assertions(&builder)}
+        };
+        dump_script(&script);
+    }
+
+    
 }
