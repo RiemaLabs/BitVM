@@ -1386,10 +1386,10 @@ mod test {
         }
 
         let script = script! {
-            {depth}
             for id in (0..=depth).rev(){
                 {U254::push_verification_meta(MetaType::SymbolicVar(id as usize))}
             }
+            {depth}
             {U254::add_ref_stack()}
             {add_assertions(&builder)}
         };
