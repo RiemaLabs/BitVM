@@ -1,8 +1,11 @@
+use std::fmt::format;
 use std::fs;
 
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::Path;
+
+use serde_json::Value;
 
 static mut VERIFED_FILE_PATH: Option<String> = None;
 
@@ -32,6 +35,7 @@ pub enum MetaType {
 #[derive(Clone)]
 pub enum ValueExpr {
     RefSymbolVar(usize),
+    RefSymbolLimb(usize, usize),
     RefStack(usize),    // offset in main stack
     RefAltStack(usize), // offset in alt stack
     Constant(u128),     // TODO: Constants within 2^254
@@ -58,8 +62,9 @@ impl ValueExpr {
     pub fn to_string(&self) -> String {
         match self {
             ValueExpr::RefSymbolVar(i) => format!("v{}", i),
+            ValueExpr::RefSymbolLimb(i, j) => format!("limbs{}[{}]", i, j),
             ValueExpr::RefStack(i) => format!("stack[{}]", i),
-            ValueExpr::RefAltStack(i) => format!("alt[{}]", i),
+            ValueExpr::RefAltStack(i) => format!("altstack[{}]", i),
             ValueExpr::Constant(val) => format!("{}", val),
             ValueExpr::Add(lhs, rhs) => format!("({} + {})", lhs.to_string(), rhs.to_string()),
             ValueExpr::Sub(lhs, rhs) => format!("({} - {})", lhs.to_string(), rhs.to_string()),
@@ -141,9 +146,34 @@ impl ConstraintBuilder {
         ValueExpr::Add(Box::new(expr), Box::new(expr1))
     }
 
+    pub fn build_sub_expr(&self, expr: ValueExpr, expr1: ValueExpr) -> ValueExpr {
+        ValueExpr::Sub(Box::new(expr), Box::new(expr1))
+    }
+
+    pub fn build_if_expr(&self, cond: BoolExpr, expr: ValueExpr, expr1: ValueExpr) -> ValueExpr {
+        ValueExpr::IfElse(Box::new(cond), Box::new(expr), Box::new(expr1))
+    }
     pub fn build_check_top(&mut self) {
         let expr: BoolExpr = self.build_stack_rel(0, self.build_constant(1), RelOp::Eq);
         self.build_assertion(expr);
+    }
+
+    pub fn build_stack_symbolic_limb_eq(&mut self, sid: usize, sym_id: usize, n_limbs: u32) {
+        let size: usize = n_limbs as usize;
+        for i in sid..sid + size {
+            let assertion =
+                self.build_stack_rel(i, self.build_symbolic_limb(sym_id, i - sid), RelOp::Eq);
+            self.build_assertion(assertion);
+        }
+    }
+
+    pub fn build_alt_symbolic_limb_eq(&mut self, sid: usize, sym_id: usize, n_limbs: u32) {
+        let size: usize = n_limbs as usize;
+        for i in sid..sid + size {
+            let assertion =
+                self.build_alt_stack_rel(i, self.build_symbolic_limb(sym_id, i - sid), RelOp::Eq);
+            self.build_assertion(assertion);
+        }
     }
 
     pub fn build_if_symbol_cond_top<F>(&self, symbol_index: usize, expr_closure: F) -> BoolExpr
@@ -177,6 +207,9 @@ impl ConstraintBuilder {
 
     pub fn build_symbolic(&self, index: usize) -> ValueExpr { ValueExpr::RefSymbolVar(index) }
 
+    pub fn build_symbolic_limb(&self, sym_index: usize, limb_index: usize) -> ValueExpr {
+        ValueExpr::RefSymbolLimb(sym_index, limb_index)
+    }
     pub fn build_assertion(&mut self, expr: BoolExpr) { self.assertions.push(expr); }
 
     // Get the total number of assertions
@@ -196,6 +229,7 @@ impl ConstraintBuilder {
 mod test {
     use super::*;
     use crate::bigint::U254;
+    // use crate::pseudo::NMUL;
     use bitcoin_script::builder::Block;
     use bitcoin_script::Script;
     use bitcoin_script::*;
@@ -328,9 +362,26 @@ mod test {
             }
         }
     }
+
+    #[test]
+    fn test_script() {
+        pre_process("../data/test.bs");
+        // let mut builder = ConstraintBuilder::new();
+        // let assertion = builder.build_if_symbol_cond_top(0, |expr| {
+        //     builder.build_rel(expr, builder.build_constant(0), RelOp::Eq)
+        // });
+        // builder.build_assertion(assertion);
+        let script = script! {
+            // { U254::push_verification_meta(MetaType::SymbolicVar(0)) }
+            { U254::add_ref_stack() }
+            // { add_assertions(&builder) }
+        };
+        dump_script(&script);
+    }
+
     #[test]
     fn check_is_zero() {
-        pre_process("../data/is_zero.bs");
+        pre_process("../data/std/is_zero.bs");
         let mut builder = ConstraintBuilder::new();
         let assertion = builder.build_if_symbol_cond_top(0, |expr| {
             builder.build_rel(expr, builder.build_constant(0), RelOp::Eq)
@@ -339,6 +390,72 @@ mod test {
         let script = script! {
             { U254::push_verification_meta(MetaType::SymbolicVar(0)) }
             { U254::is_zero(0) }
+            { add_assertions(&builder) }
+        };
+        dump_script(&script);
+    }
+
+    #[test]
+    fn check_is_zero_keep_element() {
+        pre_process("../data/std/is_zero_keep_element.bs");
+        let mut builder = ConstraintBuilder::new();
+        let assertion = builder.build_if_symbol_cond_top(0, |expr| {
+            builder.build_rel(expr, builder.build_constant(0), RelOp::Eq)
+        });
+        builder.build_assertion(assertion);
+        for i in 1..U254::N_LIMBS + 1 {
+            let index = i as usize;
+            let assertion = builder.build_stack_rel(
+                index,
+                builder.build_symbolic_limb(0, index - 1),
+                RelOp::Eq,
+            );
+            builder.build_assertion(assertion);
+        }
+        let script = script! {
+            { U254::push_verification_meta(MetaType::SymbolicVar(0)) }
+            { U254::is_zero_keep_element(0) }
+            { add_assertions(&builder) }
+        };
+        dump_script(&script);
+    }
+
+    #[test]
+    fn check_is_one() {
+        pre_process("../data/std/is_one.bs");
+        let mut builder = ConstraintBuilder::new();
+        let assertion = builder.build_if_symbol_cond_top(0, |expr| {
+            builder.build_rel(expr, builder.build_constant(1), RelOp::Eq)
+        });
+        builder.build_assertion(assertion);
+        let script = script! {
+            { U254::push_verification_meta(MetaType::SymbolicVar(0)) }
+            { U254::is_one(0) }
+            { add_assertions(&builder) }
+        };
+        dump_script(&script);
+    }
+
+    #[test]
+    fn check_is_one_keep_element() {
+        pre_process("../data/std/is_one_keep_element.bs");
+        let mut builder = ConstraintBuilder::new();
+        let assertion = builder.build_if_symbol_cond_top(0, |expr| {
+            builder.build_rel(expr, builder.build_constant(1), RelOp::Eq)
+        });
+        builder.build_assertion(assertion);
+        for i in 1..U254::N_LIMBS + 1 {
+            let index = i as usize;
+            let assertion = builder.build_stack_rel(
+                index,
+                builder.build_symbolic_limb(0, index - 1),
+                RelOp::Eq,
+            );
+            builder.build_assertion(assertion);
+        }
+        let script = script! {
+            { U254::push_verification_meta(MetaType::SymbolicVar(0)) }
+            { U254::is_one_keep_element(0) }
             { add_assertions(&builder) }
         };
         dump_script(&script);
@@ -372,11 +489,9 @@ mod test {
 
     #[test]
     fn check_drop() {
-        pre_process("../data/drop.bs");
-        // TODO : Extends Spec to support a representation of drop one symbolic variable?
-        let mut builder = ConstraintBuilder::new();
-        let assertion = builder.build_stack_rel(0, builder.build_symbolic(0), RelOp::Eq);
-        builder.build_assertion(assertion);
+        pre_process("../data/std/drop.bs");
+        let mut builder: ConstraintBuilder = ConstraintBuilder::new();
+        builder.build_stack_symbolic_limb_eq(0, 0, U254::N_LIMBS);
         let script = script! {
             {U254::push_verification_meta(MetaType::SymbolicVar(0))}
             {U254::push_verification_meta(MetaType::SymbolicVar(1))}
@@ -388,10 +503,18 @@ mod test {
 
     #[test]
     fn check_toaltstack() {
-        pre_process("../data/toaltstack.bs");
+        pre_process("../data/std/toaltstack.bs");
         let mut builder = ConstraintBuilder::new();
-        let assertion = builder.build_alt_stack_rel(0, builder.build_symbolic(0), RelOp::Eq);
-        builder.build_assertion(assertion);
+        for i in 0..U254::N_LIMBS {
+            let index = i as usize;
+            let assertion = builder.build_alt_stack_rel(
+                index,
+                builder.build_symbolic_limb(0, U254::N_LIMBS as usize - index - 1),
+                RelOp::Eq,
+            );
+            builder.build_assertion(assertion);
+        }
+
         let script = script! {
             {U254::push_verification_meta(MetaType::SymbolicVar(0))}
             {U254::toaltstack()}
@@ -402,18 +525,21 @@ mod test {
 
     #[test]
     fn check_fromaltstack() {
-        pre_process("../data/fromaltstack.bs");
+        pre_process("../data/std/fromaltstack.bs");
+        let mut builder: ConstraintBuilder = ConstraintBuilder::new();
+        builder.build_stack_symbolic_limb_eq(0, 0, U254::N_LIMBS);
         let script = script! {
-            {U254::push_verification_meta(MetaType::SymbolicVar(0))} // TODO : push to alt stack
+            {U254::push_verification_meta(MetaType::SymbolicVar(0))}
+            {U254::toaltstack()}
             {U254::fromaltstack()}
-            // TODO : Add Assertion for the symbolic variable is moved to alt stack.
+            {add_assertions(&builder)}
         };
         dump_script(&script);
     }
 
     #[test]
     fn check_is_negative() {
-        pre_process("../data/is_negative.bs");
+        pre_process("../data/std/is_negative.bs");
         let mut builder = ConstraintBuilder::new();
         let assertion = builder.build_if_symbol_cond_top(0, |expr| {
             builder.build_rel(expr, builder.build_constant(0), RelOp::Lt)
@@ -431,7 +557,7 @@ mod test {
 
     #[test]
     fn check_is_positive() {
-        pre_process("../data/is_positive.bs");
+        pre_process("../data/std/is_positive.bs");
         let mut builder = ConstraintBuilder::new();
         let assertion = builder.build_if_symbol_cond_top(0, |expr| {
             builder.build_rel(expr, builder.build_constant(0), RelOp::Gt)
@@ -448,26 +574,175 @@ mod test {
 
     #[test]
     fn check_zip() {
-        pre_process("../data/zip.bs");
+        pre_process("../data/std/zip.bs");
+        let mut builder = ConstraintBuilder::new();
+        for i in 0..U254::N_LIMBS * 2 {
+            let index = i as usize;
+            let assertion = builder.build_stack_rel(
+                index,
+                builder.build_symbolic_limb(1 - index % 2, index / 2),
+                RelOp::Eq,
+            );
+            builder.build_assertion(assertion);
+        }
         let a = 1;
         let b = 0;
         let script = script! {
             {U254::push_verification_meta(MetaType::SymbolicVar(0))}
             {U254::push_verification_meta(MetaType::SymbolicVar(1))}
             {U254::zip(a, b)}
+            {add_assertions(&builder)}
         };
         dump_script(&script);
     }
 
     #[test]
     fn check_copy_zip() {
-        pre_process("../data/copy_zip.bs");
+        pre_process("../data/std/copy_zip.bs");
         let a = 1;
         let b = 0;
+        let mut builder = ConstraintBuilder::new();
+        for i in 0..U254::N_LIMBS * 2 {
+            let index = i as usize;
+            let assertion = builder.build_stack_rel(
+                index,
+                builder.build_symbolic_limb(
+                    (1 - index % 2) * a.clone() + (index % 2) * b.clone(),
+                    index / 2,
+                ),
+                RelOp::Eq,
+            );
+            builder.build_assertion(assertion);
+        }
         let script = script! {
             {U254::push_verification_meta(MetaType::SymbolicVar(0))}
             {U254::push_verification_meta(MetaType::SymbolicVar(1))}
-            {U254::copy_zip(a, b)}
+            {U254::copy_zip(a as u32, b as u32)}
+            {add_assertions(&builder)}
+        };
+        dump_script(&script);
+    }
+
+    #[test]
+    fn check_dup_zip() {
+        pre_process("../data/std/dup_zip.bs");
+        let a = 0;
+        let mut builder = ConstraintBuilder::new();
+        for i in 0..U254::N_LIMBS * 2 {
+            let index = i as usize;
+            let assertion = builder.build_stack_rel(
+                index,
+                builder.build_symbolic_limb(a.clone(), index / 2),
+                RelOp::Eq,
+            );
+            builder.build_assertion(assertion);
+        }
+        let script = script! {
+            {U254::push_verification_meta(MetaType::SymbolicVar(0))}
+            {U254::dup_zip(a as u32)}
+            {add_assertions(&builder)}
+        };
+        dump_script(&script);
+    }
+
+    #[test]
+    fn check_copy() {
+        pre_process("../data/std/copy.bs");
+        let a = 1;
+        let mut builder = ConstraintBuilder::new();
+        let mut sid = 0;
+        builder.build_stack_symbolic_limb_eq(sid, 0, U254::N_LIMBS);
+        sid += U254::N_LIMBS as usize;
+        builder.build_stack_symbolic_limb_eq(sid, 1, U254::N_LIMBS);
+        sid += U254::N_LIMBS as usize;
+        builder.build_stack_symbolic_limb_eq(sid, 0, U254::N_LIMBS);
+        let script = script! {
+            {U254::push_verification_meta(MetaType::SymbolicVar(0))}
+            {U254::push_verification_meta(MetaType::SymbolicVar(1))}
+            {U254::copy(a as u32)}
+            {add_assertions(&builder)}
+        };
+        dump_script(&script);
+    }
+
+    #[test]
+    fn check_copy_deep() {
+        pre_process("../data/std/copy_deep.bs");
+        let a = 16;
+        let mut builder = ConstraintBuilder::new();
+        let assertion = builder.build_stack_rel(0, builder.build_symbolic(0), RelOp::Eq);
+        builder.build_assertion(assertion);
+        for i in 1..=a {
+            let assertion = builder.build_stack_rel(i, builder.build_symbolic(a - i), RelOp::Eq);
+            builder.build_assertion(assertion);
+        }
+        let script = script! {
+            for i in 0..a {
+                {U254::push_verification_meta(MetaType::SymbolicVar(i))}
+            }
+            {U254::copy(a as u32)}
+            {add_assertions(&builder)}
+        };
+        dump_script(&script);
+    }
+
+    #[test]
+    fn check_roll() {
+        pre_process("../data/std/roll.bs");
+        let a = 1;
+        let mut builder = ConstraintBuilder::new();
+        builder.build_stack_symbolic_limb_eq(0, 0, U254::N_LIMBS);
+        builder.build_stack_symbolic_limb_eq(U254::N_LIMBS as usize, 1, U254::N_LIMBS);
+        let script = script! {
+            {U254::push_verification_meta(MetaType::SymbolicVar(0))}
+            {U254::push_verification_meta(MetaType::SymbolicVar(1))}
+            {U254::roll(a as u32)}
+            {add_assertions(&builder)}
+        };
+        dump_script(&script);
+    }
+
+    #[test]
+    fn check_resize_cut() {
+        pre_process("../data/std/resize_1.bs");
+        let mut builder = ConstraintBuilder::new();
+        const T_BITS: u32 = 145;
+        const LIMB_SIZE: u32 = 29;
+        for i in 0..(T_BITS + LIMB_SIZE - 1) / LIMB_SIZE {
+            let index = i as usize;
+            let assertion =
+                builder.build_stack_rel(index, builder.build_symbolic_limb(0, index), RelOp::Eq);
+            builder.build_assertion(assertion);
+        }
+        let script = script! {
+            {U254::push_verification_meta(MetaType::SymbolicVar(0))}
+            {U254::resize::<T_BITS>()} // 145 = 29 * 5
+            {add_assertions(&builder)}
+        };
+        dump_script(&script);
+    }
+
+    #[test]
+    fn check_resize_enlarge() {
+        pre_process("../data/std/resize_2.bs");
+        let mut builder = ConstraintBuilder::new();
+        const T_BITS: u32 = 348;
+        const LIMB_SIZE: u32 = 29;
+        for i in 0..U254::N_LIMBS {
+            let index = i as usize;
+            let assertion =
+                builder.build_stack_rel(index, builder.build_symbolic_limb(0, index), RelOp::Eq);
+            builder.build_assertion(assertion);
+        }
+        for i in U254::N_LIMBS..(T_BITS + LIMB_SIZE - 1) / LIMB_SIZE {
+            let index = i as usize;
+            let assertion = builder.build_stack_rel(index, builder.build_constant(0), RelOp::Eq);
+            builder.build_assertion(assertion);
+        }
+        let script = script! {
+            {U254::push_verification_meta(MetaType::SymbolicVar(0))}
+            {U254::resize::<T_BITS>()} // 348 = 29 * 12
+            {add_assertions(&builder)}
         };
         dump_script(&script);
     }
@@ -609,12 +884,38 @@ mod test {
     fn check_double() {
         pre_process("../data/add/double.bs");
         let mut builder = ConstraintBuilder::new();
-        let assertion = builder.build_stack_rel(
-            0,
-            builder.build_mul_expr(builder.build_symbolic(0), builder.build_constant(2)),
-            RelOp::Eq,
-        );
-        builder.build_assertion(assertion);
+        let mut carry = ValueExpr::Constant(0);
+        let mut limb_size: u32 = 29;
+        for i in 0..U254::N_LIMBS {
+            if i + 1 == U254::N_LIMBS {
+                limb_size = 22;
+            }
+            let index = i as usize;
+            let limb = builder.build_symbolic_limb(0, index);
+            let value = builder.build_add_expr(builder.build_add_expr(limb.clone(), limb), carry);
+            let assertion = builder.build_stack_rel(
+                index,
+                builder.build_sub_expr(
+                    value.clone(),
+                    builder.build_if_expr(
+                        builder.build_rel(
+                            value.clone(),
+                            builder.build_constant(1 << limb_size),
+                            RelOp::Gt,
+                        ),
+                        builder.build_constant(1 << limb_size),
+                        builder.build_constant(0),
+                    ),
+                ),
+                RelOp::Eq,
+            );
+            carry = builder.build_if_expr(
+                builder.build_rel(value, builder.build_constant(1 << limb_size), RelOp::Gt),
+                builder.build_constant(1),
+                builder.build_constant(0),
+            );
+            builder.build_assertion(assertion);
+        }
         let script = script! {
             {U254::push_verification_meta(MetaType::SymbolicVar(0))}
             {U254::double(0)}
@@ -627,12 +928,39 @@ mod test {
     fn check_add() {
         pre_process("../data/add/add.bs");
         let mut builder = ConstraintBuilder::new();
-        let assertion = builder.build_stack_rel(
-            0,
-            builder.build_add_expr(builder.build_symbolic(0), builder.build_symbolic(1)),
-            RelOp::Eq,
-        );
-        builder.build_assertion(assertion);
+        let mut carry = ValueExpr::Constant(0);
+        let mut limb_size: u32 = 29;
+        for i in 0..U254::N_LIMBS {
+            if i + 1 == U254::N_LIMBS {
+                limb_size = 22;
+            }
+            let index = i as usize;
+            let limba = builder.build_symbolic_limb(0, index);
+            let limbb = builder.build_symbolic_limb(1, index);
+            let value = builder.build_add_expr(builder.build_add_expr(limba, limbb), carry);
+            let assertion = builder.build_stack_rel(
+                index,
+                builder.build_sub_expr(
+                    value.clone(),
+                    builder.build_if_expr(
+                        builder.build_rel(
+                            value.clone(),
+                            builder.build_constant(1 << limb_size),
+                            RelOp::Gt,
+                        ),
+                        builder.build_constant(1 << limb_size),
+                        builder.build_constant(0),
+                    ),
+                ),
+                RelOp::Eq,
+            );
+            carry = builder.build_if_expr(
+                builder.build_rel(value, builder.build_constant(1 << limb_size), RelOp::Gt),
+                builder.build_constant(1),
+                builder.build_constant(0),
+            );
+            builder.build_assertion(assertion);
+        }
         let script = script! {
             {U254::push_verification_meta(MetaType::SymbolicVar(0))}
             {U254::push_verification_meta(MetaType::SymbolicVar(1))}
@@ -646,12 +974,43 @@ mod test {
     fn check_add1() {
         pre_process("../data/add/add1.bs");
         let mut builder = ConstraintBuilder::new();
-        let assertion = builder.build_stack_rel(
-            0,
-            builder.build_add_expr(builder.build_symbolic(0),builder.build_constant(1)),
-            RelOp::Eq,
-        );
-        builder.build_assertion(assertion);
+        let mut carry = ValueExpr::Constant(0);
+        let mut limb_size: u32 = 29;
+        for i in 0..U254::N_LIMBS {
+            if i + 1 == U254::N_LIMBS {
+                limb_size = 22;
+            }
+            let index = i as usize;
+            let limba = builder.build_symbolic_limb(0, index);
+            let limbb = if i == 0 {
+                builder.build_constant(1)
+            } else {
+                builder.build_constant(0)
+            };
+            let value = builder.build_add_expr(builder.build_add_expr(limba, limbb), carry);
+            let assertion = builder.build_stack_rel(
+                index,
+                builder.build_sub_expr(
+                    value.clone(),
+                    builder.build_if_expr(
+                        builder.build_rel(
+                            value.clone(),
+                            builder.build_constant(1 << limb_size),
+                            RelOp::Gt,
+                        ),
+                        builder.build_constant(1 << limb_size),
+                        builder.build_constant(0),
+                    ),
+                ),
+                RelOp::Eq,
+            );
+            carry = builder.build_if_expr(
+                builder.build_rel(value, builder.build_constant(1 << limb_size), RelOp::Gt),
+                builder.build_constant(1),
+                builder.build_constant(0),
+            );
+            builder.build_assertion(assertion);
+        }
         let script = script! {
             {U254::push_verification_meta(MetaType::SymbolicVar(0))}
             {U254::add1()}
@@ -664,13 +1023,38 @@ mod test {
     fn check_double_allow_overflow() {
         pre_process("../data/add/double_allow_overflow.bs");
         let mut builder = ConstraintBuilder::new();
-        let assertion = builder.build_stack_rel(
-            0,
-            builder.build_mul_expr(builder.build_symbolic(0),builder.build_constant(2)),
-            RelOp::Eq,
-        );
-        // TODO : Model Overflow in Assertion
-        builder.build_assertion(assertion);
+        let mut carry = ValueExpr::Constant(0);
+        let mut limb_size: u32 = 29;
+        for i in 0..U254::N_LIMBS {
+            if i + 1 == U254::N_LIMBS {
+                limb_size = 22;
+            }
+            let index = i as usize;
+            let limb = builder.build_symbolic_limb(0, index);
+            let value = builder.build_add_expr(builder.build_add_expr(limb.clone(), limb), carry);
+            let assertion = builder.build_stack_rel(
+                index,
+                builder.build_sub_expr(
+                    value.clone(),
+                    builder.build_if_expr(
+                        builder.build_rel(
+                            value.clone(),
+                            builder.build_constant(1 << limb_size),
+                            RelOp::Gt,
+                        ),
+                        builder.build_constant(1 << limb_size),
+                        builder.build_constant(0),
+                    ),
+                ),
+                RelOp::Eq,
+            );
+            carry = builder.build_if_expr(
+                builder.build_rel(value, builder.build_constant(1 << limb_size), RelOp::Gt),
+                builder.build_constant(1),
+                builder.build_constant(0),
+            );
+            builder.build_assertion(assertion);
+        }
         let script = script! {
             {U254::push_verification_meta(MetaType::SymbolicVar(0))}
             {U254::double_allow_overflow()}
@@ -683,14 +1067,39 @@ mod test {
     fn check_double_allow_overflow_keep_element() {
         pre_process("../data/add/double_allow_overflow_keep_element.bs");
         let mut builder = ConstraintBuilder::new();
-        let assertion = builder.build_stack_rel(
-            0,
-            builder.build_mul_expr(builder.build_symbolic(0),builder.build_constant(2)),
-            RelOp::Eq,
-        );
-        // TODO : Model Overflow in Assertion
-        // TODO : Model Keep Element here
-        builder.build_assertion(assertion);
+        let mut carry = ValueExpr::Constant(0);
+        let mut limb_size: u32 = 29;
+        for i in 0..U254::N_LIMBS {
+            if i + 1 == U254::N_LIMBS {
+                limb_size = 22;
+            }
+            let index = i as usize;
+            let limb = builder.build_symbolic_limb(0, index);
+            let value = builder.build_add_expr(builder.build_add_expr(limb.clone(), limb), carry);
+            let assertion = builder.build_stack_rel(
+                index,
+                builder.build_sub_expr(
+                    value.clone(),
+                    builder.build_if_expr(
+                        builder.build_rel(
+                            value.clone(),
+                            builder.build_constant(1 << limb_size),
+                            RelOp::Gt,
+                        ),
+                        builder.build_constant(1 << limb_size),
+                        builder.build_constant(0),
+                    ),
+                ),
+                RelOp::Eq,
+            );
+            carry = builder.build_if_expr(
+                builder.build_rel(value, builder.build_constant(1 << limb_size), RelOp::Gt),
+                builder.build_constant(1),
+                builder.build_constant(0),
+            );
+            builder.build_assertion(assertion);
+        }
+        builder.build_stack_symbolic_limb_eq(U254::N_LIMBS as usize, 0, U254::N_LIMBS);
         let script = script! {
             {U254::push_verification_meta(MetaType::SymbolicVar(0))}
             {U254::double_allow_overflow_keep_element(0)}
@@ -703,13 +1112,51 @@ mod test {
     fn check_double_prevent_overflow() {
         pre_process("../data/add/double_prevent_overflow.bs");
         let mut builder = ConstraintBuilder::new();
-        let assertion = builder.build_stack_rel(
-            0,
-            builder.build_mul_expr(builder.build_symbolic(0),builder.build_constant(2)),
-            RelOp::Eq,
-        );
-        // TODO : Model Prevent Overflow in Assertion
-        builder.build_assertion(assertion);
+        let mut carry = ValueExpr::Constant(0);
+        let mut limb_size: u32 = 29;
+        for i in 0..U254::N_LIMBS {
+            if i + 1 == U254::N_LIMBS {
+                limb_size = 22;
+            }
+            let index = i as usize;
+            let limb = builder.build_symbolic_limb(0, index);
+            let value =
+                builder.build_add_expr(builder.build_add_expr(limb.clone(), limb.clone()), carry);
+            let value_nlo = builder.build_sub_expr(
+                value.clone(),
+                builder.build_if_expr(
+                    builder.build_rel(
+                        value.clone(),
+                        builder.build_constant(1 << limb_size),
+                        RelOp::Gt,
+                    ),
+                    builder.build_constant(1 << limb_size),
+                    builder.build_constant(0),
+                ),
+            );
+            let assertion = builder.build_stack_rel(index, value_nlo.clone(), RelOp::Eq);
+            builder.build_assertion(assertion);
+            if i + 1 == U254::N_LIMBS {
+                builder.build_assertion(builder.build_rel(
+                    builder.build_if_expr(
+                        builder.build_rel(builder.build_constant(1 << 21), value_nlo, RelOp::Lt),
+                        builder.build_constant(1),
+                        builder.build_constant(0),
+                    ),
+                    builder.build_if_expr(
+                        builder.build_rel(limb, builder.build_constant(1 << 21), RelOp::Lt),
+                        builder.build_constant(1),
+                        builder.build_constant(0),
+                    ),
+                    RelOp::Eq,
+                ));
+            }
+            carry = builder.build_if_expr(
+                builder.build_rel(value, builder.build_constant(1 << limb_size), RelOp::Gt),
+                builder.build_constant(1),
+                builder.build_constant(0),
+            );
+        }
         let script = script! {
             {U254::push_verification_meta(MetaType::SymbolicVar(0))}
             {U254::double_prevent_overflow()}
@@ -719,23 +1166,233 @@ mod test {
     }
 
     #[test]
-    fn check_add_ref_with_top(){
-        pre_process("../data/add/double_prevent_overflow.bs");
+    fn check_add_ref_with_top() {
+        pre_process("../data/add/add_ref_with_top.bs");
         let mut builder = ConstraintBuilder::new();
-        let assertion = builder.build_stack_rel(
-            0,
-            builder.build_mul_expr(builder.build_symbolic(0),builder.build_constant(2)),
-            RelOp::Eq,
-        );
-        // TODO : Model Prevent Overflow in Assertion
-        builder.build_assertion(assertion);
+        let mut carry = ValueExpr::Constant(0);
+        let mut limb_size: u32 = 29;
+        let mut sid = U254::N_LIMBS;
+        for i in 0..sid {
+            if i + 1 == U254::N_LIMBS {
+                limb_size = 22;
+            }
+            let index = i as usize;
+            let limba = builder.build_symbolic_limb(0, index);
+            let limbb = builder.build_symbolic_limb(1, index);
+            let value =
+                builder.build_add_expr(builder.build_add_expr(limba.clone(), limbb.clone()), carry);
+            let value_nlo = builder.build_sub_expr(
+                value.clone(),
+                builder.build_if_expr(
+                    builder.build_rel(
+                        value.clone(),
+                        builder.build_constant(1 << limb_size),
+                        RelOp::Gt,
+                    ),
+                    builder.build_constant(1 << limb_size),
+                    builder.build_constant(0),
+                ),
+            );
+            let assertion = builder.build_stack_rel(index, value_nlo.clone(), RelOp::Eq);
+            carry = builder.build_if_expr(
+                builder.build_rel(value, builder.build_constant(1 << limb_size), RelOp::Gt),
+                builder.build_constant(1),
+                builder.build_constant(0),
+            );
+            builder.build_assertion(assertion);
+            if i + 1 == U254::N_LIMBS {
+                let sign_a = builder.build_if_expr(
+                    builder.build_rel(builder.build_constant(1 << 21), limba, RelOp::Ge),
+                    builder.build_constant(1),
+                    builder.build_constant(0),
+                );
+                let sign_b = builder.build_if_expr(
+                    builder.build_rel(limbb, builder.build_constant(1 << 21), RelOp::Lt),
+                    builder.build_constant(1),
+                    builder.build_constant(0),
+                );
+                let sign_i = builder.build_if_expr(
+                    builder.build_rel(value_nlo, builder.build_constant(1 << 21), RelOp::Ge),
+                    builder.build_constant(1),
+                    builder.build_constant(0),
+                );
+                let sum = builder.build_add_expr(sign_a, builder.build_add_expr(sign_b, sign_i));
+                builder.build_assertion(builder.build_rel(
+                    sum.clone(),
+                    builder.build_constant(1),
+                    RelOp::Ge,
+                ));
+                builder.build_assertion(builder.build_rel(
+                    sum,
+                    builder.build_constant(2),
+                    RelOp::Le,
+                ));
+            }
+        }
+        builder.build_stack_symbolic_limb_eq(sid as usize, 1, U254::N_LIMBS);
+        sid += U254::N_LIMBS;
+        builder.build_stack_symbolic_limb_eq(sid as usize, 0, U254::N_LIMBS);
         let script = script! {
             {U254::push_verification_meta(MetaType::SymbolicVar(0))}
-            {U254::double_prevent_overflow()}
+            {U254::push_verification_meta(MetaType::SymbolicVar(1))}
+            {U254::add_ref_with_top(1)}
             {add_assertions(&builder)}
         };
         dump_script(&script);
     }
 
-    
+    #[test]
+    fn check_add_ref() {
+        pre_process("../data/add/add_ref.bs");
+        let mut builder = ConstraintBuilder::new();
+        let mut carry = ValueExpr::Constant(0);
+        let mut limb_size: u32 = 29;
+        let sid = U254::N_LIMBS;
+        for i in 0..sid {
+            if i + 1 == U254::N_LIMBS {
+                limb_size = 22;
+            }
+            let index = i as usize;
+            let limba = builder.build_symbolic_limb(0, index);
+            let limbb = builder.build_symbolic_limb(1, index);
+            let value =
+                builder.build_add_expr(builder.build_add_expr(limba.clone(), limbb.clone()), carry);
+            let value_nlo = builder.build_sub_expr(
+                value.clone(),
+                builder.build_if_expr(
+                    builder.build_rel(
+                        value.clone(),
+                        builder.build_constant(1 << limb_size),
+                        RelOp::Gt,
+                    ),
+                    builder.build_constant(1 << limb_size),
+                    builder.build_constant(0),
+                ),
+            );
+            let assertion = builder.build_stack_rel(index, value_nlo.clone(), RelOp::Eq);
+            carry = builder.build_if_expr(
+                builder.build_rel(value, builder.build_constant(1 << limb_size), RelOp::Gt),
+                builder.build_constant(1),
+                builder.build_constant(0),
+            );
+            builder.build_assertion(assertion);
+            if i + 1 == U254::N_LIMBS {
+                let sign_a = builder.build_if_expr(
+                    builder.build_rel(builder.build_constant(1 << 21), limba, RelOp::Ge),
+                    builder.build_constant(1),
+                    builder.build_constant(0),
+                );
+                let sign_b = builder.build_if_expr(
+                    builder.build_rel(limbb, builder.build_constant(1 << 21), RelOp::Lt),
+                    builder.build_constant(1),
+                    builder.build_constant(0),
+                );
+                let sign_i = builder.build_if_expr(
+                    builder.build_rel(value_nlo, builder.build_constant(1 << 21), RelOp::Ge),
+                    builder.build_constant(1),
+                    builder.build_constant(0),
+                );
+                let sum = builder.build_add_expr(sign_a, builder.build_add_expr(sign_b, sign_i));
+                builder.build_assertion(builder.build_rel(
+                    sum.clone(),
+                    builder.build_constant(1),
+                    RelOp::Ge,
+                ));
+                builder.build_assertion(builder.build_rel(
+                    sum,
+                    builder.build_constant(2),
+                    RelOp::Le,
+                ));
+            }
+        }
+        builder.build_stack_symbolic_limb_eq(sid as usize, 0, U254::N_LIMBS);
+        let script = script! {
+            {U254::push_verification_meta(MetaType::SymbolicVar(0))}
+            {U254::push_verification_meta(MetaType::SymbolicVar(1))}
+            {U254::add_ref(1)}
+            {add_assertions(&builder)}
+        };
+        dump_script(&script);
+    }
+
+    #[test]
+    fn check_add_ref_stack() {
+        pre_process("../data/add/add_ref_stack.bs");
+        let mut builder = ConstraintBuilder::new();
+        let mut carry = ValueExpr::Constant(0);
+        let depth: u32 = 4; // depth > 0
+        let mut limb_size: u32 = 29;
+        let mut sid = U254::N_LIMBS;
+        for i in 0..sid {
+            if i + 1 == U254::N_LIMBS {
+                limb_size = 22;
+            }
+            let index = i as usize;
+            let limba = builder.build_symbolic_limb(0, index);
+            let limbb = builder.build_symbolic_limb(depth as usize, index);
+            let value =
+                builder.build_add_expr(builder.build_add_expr(limba.clone(), limbb.clone()), carry);
+            let value_nlo = builder.build_sub_expr(
+                value.clone(),
+                builder.build_if_expr(
+                    builder.build_rel(
+                        value.clone(),
+                        builder.build_constant(1 << limb_size),
+                        RelOp::Gt,
+                    ),
+                    builder.build_constant(1 << limb_size),
+                    builder.build_constant(0),
+                ),
+            );
+            let assertion = builder.build_stack_rel(index, value_nlo.clone(), RelOp::Eq);
+            carry = builder.build_if_expr(
+                builder.build_rel(value, builder.build_constant(1 << limb_size), RelOp::Gt),
+                builder.build_constant(1),
+                builder.build_constant(0),
+            );
+            builder.build_assertion(assertion);
+            if i + 1 == U254::N_LIMBS {
+                let sign_a = builder.build_if_expr(
+                    builder.build_rel(builder.build_constant(1 << 21), limba, RelOp::Ge),
+                    builder.build_constant(1),
+                    builder.build_constant(0),
+                );
+                let sign_b = builder.build_if_expr(
+                    builder.build_rel(limbb, builder.build_constant(1 << 21), RelOp::Lt),
+                    builder.build_constant(1),
+                    builder.build_constant(0),
+                );
+                let sign_i = builder.build_if_expr(
+                    builder.build_rel(value_nlo, builder.build_constant(1 << 21), RelOp::Ge),
+                    builder.build_constant(1),
+                    builder.build_constant(0),
+                );
+                let sum = builder.build_add_expr(sign_a, builder.build_add_expr(sign_b, sign_i));
+                builder.build_assertion(builder.build_rel(
+                    sum.clone(),
+                    builder.build_constant(1),
+                    RelOp::Ge,
+                ));
+                builder.build_assertion(builder.build_rel(
+                    sum,
+                    builder.build_constant(2),
+                    RelOp::Le,
+                ));
+            }
+        }
+        for id in 1..=depth {
+            builder.build_stack_symbolic_limb_eq(sid as usize, id as usize, U254::N_LIMBS);
+            sid += U254::N_LIMBS;
+        }
+
+        let script = script! {
+            {depth}
+            for id in (0..=depth).rev(){
+                {U254::push_verification_meta(MetaType::SymbolicVar(id as usize))}
+            }
+            {U254::add_ref_stack()}
+            {add_assertions(&builder)}
+        };
+        dump_script(&script);
+    }
 }

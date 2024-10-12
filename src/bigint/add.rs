@@ -401,8 +401,8 @@ fn limb_double_without_carry() -> Script {
         OP_LESSTHANOREQUAL // {base} {2*limb} {base<=2*limb}
         OP_TUCK // {base} {base<=2*limb} {2*limb} {base<=2*limb}
         OP_IF
-            2 OP_PICK OP_SUB
-        OP_ENDIF
+            2 OP_PICK OP_SUB // {base} {base<=2*limb} {2*limb - base} 
+        OP_ENDIF // {base} {base<=2*limb} {2*limb} 
     }
 }
 
