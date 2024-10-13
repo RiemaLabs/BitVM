@@ -1,11 +1,23 @@
-use std::fmt::format;
+// use std::fmt::format;
 use std::fs;
 
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::Path;
 
-use serde_json::Value;
+// use serde_json::Value;
+
+const U254_POWERS: [&str; 9] = [
+    "1",
+    "536870912",
+    "288230376151711744",
+    "154742504910672534362390528",
+    "83076749736557242056487941267521536",
+    "44601490397061246283071436545296723011960832",
+    "23945242826029513411849172299223580994042798784118784",
+    "12855504354071922204335696738729300820177623950262342682411008",
+    "6901746346790563787434755862277025452451108972170386555162524223799296",
+];
 
 static mut VERIFED_FILE_PATH: Option<String> = None;
 
@@ -30,6 +42,7 @@ pub fn writein_verified_meta(input: String) {
 pub enum MetaType {
     SymbolicVar(usize),
     Assertion(usize, BoolExpr),
+    Assumption(usize, BoolExpr),
 }
 
 #[derive(Clone)]
@@ -39,9 +52,14 @@ pub enum ValueExpr {
     RefStack(usize),    // offset in main stack
     RefAltStack(usize), // offset in alt stack
     Constant(u128),     // TODO: Constants within 2^254
+    BigConstant(String),
     Add(Box<ValueExpr>, Box<ValueExpr>),
     Sub(Box<ValueExpr>, Box<ValueExpr>),
     Mul(Box<ValueExpr>, Box<ValueExpr>),
+    Div(Box<ValueExpr>, Box<ValueExpr>),
+    Mod(Box<ValueExpr>, Box<ValueExpr>),
+    LShift(Box<ValueExpr>, u128),
+    RShift(Box<ValueExpr>, u128),
     IfElse(Box<BoolExpr>, Box<ValueExpr>, Box<ValueExpr>), // If-Else expression
 }
 
@@ -66,9 +84,14 @@ impl ValueExpr {
             ValueExpr::RefStack(i) => format!("stack[{}]", i),
             ValueExpr::RefAltStack(i) => format!("altstack[{}]", i),
             ValueExpr::Constant(val) => format!("{}", val),
+            ValueExpr::BigConstant(string) => string.clone(),
             ValueExpr::Add(lhs, rhs) => format!("({} + {})", lhs.to_string(), rhs.to_string()),
             ValueExpr::Sub(lhs, rhs) => format!("({} - {})", lhs.to_string(), rhs.to_string()),
             ValueExpr::Mul(lhs, rhs) => format!("({} * {})", lhs.to_string(), rhs.to_string()),
+            ValueExpr::Div(lhs, rhs) => format!("({} / {})", lhs.to_string(), rhs.to_string()),
+            ValueExpr::Mod(lhs, rhs) => format!("({} % {})", lhs.to_string(), rhs.to_string()),
+            ValueExpr::LShift(expr, shift) => format!("({} << {})", expr.to_string(), shift),
+            ValueExpr::RShift(expr, shift) => format!("({} >> {})", expr.to_string(), shift),
             ValueExpr::IfElse(cond, then_expr, else_expr) => format!(
                 "(if {} then {} else {})",
                 cond.to_string(),
@@ -109,6 +132,7 @@ pub enum RelOp {
 #[allow(dead_code)]
 pub struct ConstraintBuilder {
     assertions: Vec<BoolExpr>,
+    assumptions: Vec<BoolExpr>,
 }
 
 #[allow(dead_code)]
@@ -117,6 +141,7 @@ impl ConstraintBuilder {
     pub fn new() -> Self {
         ConstraintBuilder {
             assertions: Vec::new(),
+            assumptions: Vec::new(),
         }
     }
 
@@ -138,6 +163,14 @@ impl ConstraintBuilder {
         self.build_rel(symbol_var_expr, expr, rel)
     }
 
+    pub fn build_mod_expr(&self, expr: ValueExpr, expr1: ValueExpr) -> ValueExpr {
+        ValueExpr::Mod(Box::new(expr), Box::new(expr1))
+    }
+
+    pub fn build_div_expr(&self, expr: ValueExpr, expr1: ValueExpr) -> ValueExpr {
+        ValueExpr::Div(Box::new(expr), Box::new(expr1))
+    }
+
     pub fn build_mul_expr(&self, expr: ValueExpr, expr1: ValueExpr) -> ValueExpr {
         ValueExpr::Mul(Box::new(expr), Box::new(expr1))
     }
@@ -150,8 +183,27 @@ impl ConstraintBuilder {
         ValueExpr::Sub(Box::new(expr), Box::new(expr1))
     }
 
+    pub fn build_lshift_expr(&self, expr: ValueExpr, expr1: ValueExpr) -> Result<ValueExpr, ()> {
+        match expr1 {
+            ValueExpr::Constant(shift_val) => Ok(ValueExpr::LShift(Box::new(expr), shift_val)),
+            _ => Err(()),
+        }
+    }
+
+    // 构建 RShift 表达式，确保 shift 是 Constant
+    pub fn build_rshift_expr(&self, expr: ValueExpr, expr1: ValueExpr) -> Result<ValueExpr, ()> {
+        match expr1 {
+            ValueExpr::Constant(shift_val) => Ok(ValueExpr::RShift(Box::new(expr), shift_val)),
+            _ => Err(()),
+        }
+    }
+
     pub fn build_if_expr(&self, cond: BoolExpr, expr: ValueExpr, expr1: ValueExpr) -> ValueExpr {
         ValueExpr::IfElse(Box::new(cond), Box::new(expr), Box::new(expr1))
+    }
+
+    pub fn build_or_rel(&self, cond: BoolExpr, cond1: BoolExpr) -> BoolExpr {
+        BoolExpr::Or(Box::new(cond), Box::new(cond1))
     }
     pub fn build_check_top(&mut self) {
         let expr: BoolExpr = self.build_stack_rel(0, self.build_constant(1), RelOp::Eq);
@@ -165,6 +217,18 @@ impl ConstraintBuilder {
                 self.build_stack_rel(i, self.build_symbolic_limb(sym_id, i - sid), RelOp::Eq);
             self.build_assertion(assertion);
         }
+    }
+
+    pub fn build_stack_eq_u254_variable(&self, sid: usize) -> ValueExpr {
+        let mut expr = self.build_stack(sid);
+        for i in 1..9 {
+            let cons = U254_POWERS[i].to_string();
+            expr = self.build_add_expr(
+                expr.clone(),
+                self.build_mul_expr(self.build_stack(sid + i), ValueExpr::BigConstant(cons)),
+            );
+        }
+        expr
     }
 
     pub fn build_alt_symbolic_limb_eq(&mut self, sid: usize, sym_id: usize, n_limbs: u32) {
@@ -207,11 +271,16 @@ impl ConstraintBuilder {
 
     pub fn build_symbolic(&self, index: usize) -> ValueExpr { ValueExpr::RefSymbolVar(index) }
 
+    pub fn build_stack(&self, index: usize) -> ValueExpr { ValueExpr::RefStack(index) }
+
+    pub fn build_alt_stack(&self, index: usize) -> ValueExpr { ValueExpr::RefAltStack(index) }
+
     pub fn build_symbolic_limb(&self, sym_index: usize, limb_index: usize) -> ValueExpr {
         ValueExpr::RefSymbolLimb(sym_index, limb_index)
     }
     pub fn build_assertion(&mut self, expr: BoolExpr) { self.assertions.push(expr); }
 
+    pub fn build_assumption(&mut self, expr: BoolExpr) { self.assumptions.push(expr); }
     // Get the total number of assertions
     pub fn get_assertions_len(&self) -> usize { self.assertions.len() }
 
@@ -219,6 +288,17 @@ impl ConstraintBuilder {
     pub fn get_ith_assertion(&self, index: usize) -> Option<MetaType> {
         if index < self.assertions.len() {
             Some(MetaType::Assertion(index, self.assertions[index].clone()))
+        } else {
+            None
+        }
+    }
+
+    pub fn get_assumptions_len(&self) -> usize { self.assumptions.len() }
+
+    // Export the i-th assertion as MetaType::Assertion
+    pub fn get_ith_assumption(&self, index: usize) -> Option<MetaType> {
+        if index < self.assumptions.len() {
+            Some(MetaType::Assumption(index, self.assumptions[index].clone()))
         } else {
             None
         }
@@ -359,6 +439,14 @@ mod test {
         script! {
             for i in 0..builder.get_assertions_len() {
                 {U254::push_verification_meta(builder.get_ith_assertion(i).unwrap()) }
+            }
+        }
+    }
+
+    fn add_assumptions(builder: &ConstraintBuilder) -> Script {
+        script! {
+            for i in 0..builder.get_assumptions_len() {
+                {U254::push_verification_meta(builder.get_ith_assumption(i).unwrap()) }
             }
         }
     }
@@ -901,7 +989,7 @@ mod test {
                         builder.build_rel(
                             value.clone(),
                             builder.build_constant(1 << limb_size),
-                            RelOp::Gt,
+                            RelOp::Ge,
                         ),
                         builder.build_constant(1 << limb_size),
                         builder.build_constant(0),
@@ -910,7 +998,7 @@ mod test {
                 RelOp::Eq,
             );
             carry = builder.build_if_expr(
-                builder.build_rel(value, builder.build_constant(1 << limb_size), RelOp::Gt),
+                builder.build_rel(value, builder.build_constant(1 << limb_size), RelOp::Ge),
                 builder.build_constant(1),
                 builder.build_constant(0),
             );
@@ -946,7 +1034,7 @@ mod test {
                         builder.build_rel(
                             value.clone(),
                             builder.build_constant(1 << limb_size),
-                            RelOp::Gt,
+                            RelOp::Ge,
                         ),
                         builder.build_constant(1 << limb_size),
                         builder.build_constant(0),
@@ -955,7 +1043,7 @@ mod test {
                 RelOp::Eq,
             );
             carry = builder.build_if_expr(
-                builder.build_rel(value, builder.build_constant(1 << limb_size), RelOp::Gt),
+                builder.build_rel(value, builder.build_constant(1 << limb_size), RelOp::Ge),
                 builder.build_constant(1),
                 builder.build_constant(0),
             );
@@ -965,6 +1053,106 @@ mod test {
             {U254::push_verification_meta(MetaType::SymbolicVar(0))}
             {U254::push_verification_meta(MetaType::SymbolicVar(1))}
             {U254::add(1,0)}
+            {add_assertions(&builder)}
+        };
+        dump_script(&script);
+    }
+
+    #[test]
+    fn check_lshift_prevent_overflow() {
+        pre_process("../data/add/lshift_prevent_overflow.bs");
+        let mut builder = ConstraintBuilder::new();
+        let shift_bits = 30;
+        let mut limb_size = 29;
+        let mut carry = vec![];
+        for i in 0..U254::N_LIMBS {
+            if i + 1 == U254::N_LIMBS {
+                limb_size = 22;
+            }
+            let shift_outer_offset = shift_bits / limb_size;
+            let shift_inner_offset = shift_bits % limb_size;
+            let limb = builder.build_symbolic_limb(0, i as usize);
+            let left_expr = builder
+                .build_rshift_expr(
+                    limb.clone(),
+                    builder.build_constant((limb_size - shift_inner_offset) as u128),
+                )
+                .unwrap();
+            carry.push((shift_outer_offset + 1, left_expr.clone()));
+            let right_expr = builder
+                .build_lshift_expr(
+                    builder.build_sub_expr(
+                        limb,
+                        builder
+                            .build_lshift_expr(
+                                left_expr,
+                                builder.build_constant((limb_size - shift_inner_offset) as u128),
+                            )
+                            .unwrap(),
+                    ),
+                    builder.build_constant(shift_inner_offset as u128),
+                )
+                .unwrap();
+            carry.push((shift_outer_offset, right_expr));
+            let mut res_expr = ValueExpr::Constant(0);
+            let mut new_carry = Vec::with_capacity(carry.len());
+            for (counter, expr) in carry.iter_mut() {
+                // println!("counter:{}\n  expr: {}", *counter, expr.to_string());
+                if *counter == 0 {
+                    res_expr = builder.build_add_expr(res_expr.clone(), expr.clone());
+                } else {
+                    *counter -= 1;
+                    new_carry.push((*counter, expr.clone()));
+                }
+            }
+            carry = new_carry;
+            builder.build_assertion(builder.build_stack_rel(i as usize, res_expr, RelOp::Eq));
+        }
+        let mut restrict_line = shift_bits;
+        for i in (0..U254::N_LIMBS).rev() {
+            let index = i as usize;
+            let expr: BoolExpr;
+            if i == U254::N_LIMBS - 1 {
+                if restrict_line >= 22 {
+                    expr = builder.build_rel(
+                        builder.build_symbolic_limb(0, index),
+                        builder.build_constant(0),
+                        RelOp::Eq,
+                    );
+                    restrict_line -= 22;
+                } else {
+                    expr = builder.build_rel(
+                        builder.build_symbolic_limb(0, index),
+                        builder.build_constant(1 << (22 - restrict_line)),
+                        RelOp::Le,
+                    );
+                    restrict_line = 0;
+                }
+            } else {
+                if restrict_line >= 29 {
+                    expr = builder.build_rel(
+                        builder.build_symbolic_limb(0, index),
+                        builder.build_constant(0),
+                        RelOp::Eq,
+                    );
+                    restrict_line -= 29;
+                } else {
+                    expr = builder.build_rel(
+                        builder.build_symbolic_limb(0, index),
+                        builder.build_constant(1 << (29 - restrict_line)),
+                        RelOp::Le,
+                    );
+                    restrict_line = 0;
+                }
+            }
+            builder.build_assertion(expr);
+            if restrict_line == 0 {
+                break;
+            }
+        }
+        let script = script! {
+            {U254::push_verification_meta(MetaType::SymbolicVar(0))}
+            {U254::lshift_prevent_overflow(shift_bits)}
             {add_assertions(&builder)}
         };
         dump_script(&script);
@@ -996,7 +1184,7 @@ mod test {
                         builder.build_rel(
                             value.clone(),
                             builder.build_constant(1 << limb_size),
-                            RelOp::Gt,
+                            RelOp::Ge,
                         ),
                         builder.build_constant(1 << limb_size),
                         builder.build_constant(0),
@@ -1005,7 +1193,7 @@ mod test {
                 RelOp::Eq,
             );
             carry = builder.build_if_expr(
-                builder.build_rel(value, builder.build_constant(1 << limb_size), RelOp::Gt),
+                builder.build_rel(value, builder.build_constant(1 << limb_size), RelOp::Ge),
                 builder.build_constant(1),
                 builder.build_constant(0),
             );
@@ -1040,7 +1228,7 @@ mod test {
                         builder.build_rel(
                             value.clone(),
                             builder.build_constant(1 << limb_size),
-                            RelOp::Gt,
+                            RelOp::Ge,
                         ),
                         builder.build_constant(1 << limb_size),
                         builder.build_constant(0),
@@ -1049,7 +1237,7 @@ mod test {
                 RelOp::Eq,
             );
             carry = builder.build_if_expr(
-                builder.build_rel(value, builder.build_constant(1 << limb_size), RelOp::Gt),
+                builder.build_rel(value, builder.build_constant(1 << limb_size), RelOp::Ge),
                 builder.build_constant(1),
                 builder.build_constant(0),
             );
@@ -1084,7 +1272,7 @@ mod test {
                         builder.build_rel(
                             value.clone(),
                             builder.build_constant(1 << limb_size),
-                            RelOp::Gt,
+                            RelOp::Ge,
                         ),
                         builder.build_constant(1 << limb_size),
                         builder.build_constant(0),
@@ -1093,7 +1281,7 @@ mod test {
                 RelOp::Eq,
             );
             carry = builder.build_if_expr(
-                builder.build_rel(value, builder.build_constant(1 << limb_size), RelOp::Gt),
+                builder.build_rel(value, builder.build_constant(1 << limb_size), RelOp::Ge),
                 builder.build_constant(1),
                 builder.build_constant(0),
             );
@@ -1128,7 +1316,7 @@ mod test {
                     builder.build_rel(
                         value.clone(),
                         builder.build_constant(1 << limb_size),
-                        RelOp::Gt,
+                        RelOp::Ge,
                     ),
                     builder.build_constant(1 << limb_size),
                     builder.build_constant(0),
@@ -1148,11 +1336,11 @@ mod test {
                         builder.build_constant(1),
                         builder.build_constant(0),
                     ),
-                    RelOp::Eq,
+                    RelOp::Neq,
                 ));
             }
             carry = builder.build_if_expr(
-                builder.build_rel(value, builder.build_constant(1 << limb_size), RelOp::Gt),
+                builder.build_rel(value, builder.build_constant(1 << limb_size), RelOp::Ge),
                 builder.build_constant(1),
                 builder.build_constant(0),
             );
@@ -1187,7 +1375,7 @@ mod test {
                     builder.build_rel(
                         value.clone(),
                         builder.build_constant(1 << limb_size),
-                        RelOp::Gt,
+                        RelOp::Ge,
                     ),
                     builder.build_constant(1 << limb_size),
                     builder.build_constant(0),
@@ -1195,7 +1383,7 @@ mod test {
             );
             let assertion = builder.build_stack_rel(index, value_nlo.clone(), RelOp::Eq);
             carry = builder.build_if_expr(
-                builder.build_rel(value, builder.build_constant(1 << limb_size), RelOp::Gt),
+                builder.build_rel(value, builder.build_constant(1 << limb_size), RelOp::Ge),
                 builder.build_constant(1),
                 builder.build_constant(0),
             );
@@ -1263,7 +1451,7 @@ mod test {
                     builder.build_rel(
                         value.clone(),
                         builder.build_constant(1 << limb_size),
-                        RelOp::Gt,
+                        RelOp::Ge,
                     ),
                     builder.build_constant(1 << limb_size),
                     builder.build_constant(0),
@@ -1271,7 +1459,7 @@ mod test {
             );
             let assertion = builder.build_stack_rel(index, value_nlo.clone(), RelOp::Eq);
             carry = builder.build_if_expr(
-                builder.build_rel(value, builder.build_constant(1 << limb_size), RelOp::Gt),
+                builder.build_rel(value, builder.build_constant(1 << limb_size), RelOp::Ge),
                 builder.build_constant(1),
                 builder.build_constant(0),
             );
@@ -1338,7 +1526,7 @@ mod test {
                     builder.build_rel(
                         value.clone(),
                         builder.build_constant(1 << limb_size),
-                        RelOp::Gt,
+                        RelOp::Ge,
                     ),
                     builder.build_constant(1 << limb_size),
                     builder.build_constant(0),
@@ -1346,7 +1534,7 @@ mod test {
             );
             let assertion = builder.build_stack_rel(index, value_nlo.clone(), RelOp::Eq);
             carry = builder.build_if_expr(
-                builder.build_rel(value, builder.build_constant(1 << limb_size), RelOp::Gt),
+                builder.build_rel(value, builder.build_constant(1 << limb_size), RelOp::Ge),
                 builder.build_constant(1),
                 builder.build_constant(0),
             );
@@ -1391,6 +1579,499 @@ mod test {
             }
             {depth}
             {U254::add_ref_stack()}
+            {add_assertions(&builder)}
+        };
+        dump_script(&script);
+    }
+
+    #[test]
+    fn check_sub() {
+        pre_process("../data/sub/sub.bs");
+        let mut builder = ConstraintBuilder::new();
+        let mut carry = ValueExpr::Constant(0);
+        let mut limb_size: u32 = 29;
+        for i in 0..U254::N_LIMBS {
+            if i + 1 == U254::N_LIMBS {
+                limb_size = 22;
+            }
+            let index = i as usize;
+            let limba = builder.build_symbolic_limb(0, index);
+            let limbb = builder.build_symbolic_limb(1, index);
+            let value = builder.build_sub_expr(builder.build_sub_expr(limba, limbb), carry);
+            let assertion = builder.build_stack_rel(
+                index,
+                builder.build_add_expr(
+                    value.clone(),
+                    builder.build_if_expr(
+                        builder.build_rel(value.clone(), builder.build_constant(0), RelOp::Lt),
+                        builder.build_constant(1 << limb_size),
+                        builder.build_constant(0),
+                    ),
+                ),
+                RelOp::Eq,
+            );
+            carry = builder.build_if_expr(
+                builder.build_rel(value, builder.build_constant(0), RelOp::Lt),
+                builder.build_constant(1),
+                builder.build_constant(0),
+            );
+            builder.build_assertion(assertion);
+        }
+        let script = script! {
+            {U254::push_verification_meta(MetaType::SymbolicVar(0))}
+            {U254::push_verification_meta(MetaType::SymbolicVar(1))}
+            {U254::sub(1,0)}
+            {add_assertions(&builder)}
+        };
+        dump_script(&script);
+    }
+
+    #[test]
+    fn check_convert_to_be_bits() {
+        pre_process("../data/bits/convert_to_be_bits.bs");
+        let mut builder = ConstraintBuilder::new();
+        let mut limb_size: u32 = 22;
+        let mut index = 0;
+        for i in 0..U254::N_LIMBS {
+            if i != 0 {
+                limb_size = 29;
+            }
+            let mut expr = ValueExpr::Constant(0);
+            for j in 0..limb_size {
+                expr = builder.build_add_expr(
+                    expr.clone(),
+                    builder.build_mul_expr(
+                        builder.build_stack((index + j) as usize),
+                        builder.build_constant(1 << (limb_size - j - 1) as u128),
+                    ),
+                );
+                builder.build_assertion(builder.build_rel(
+                    builder.build_mul_expr(
+                        builder.build_sub_expr(
+                            builder.build_stack((index + j) as usize),
+                            builder.build_constant(0),
+                        ),
+                        builder.build_sub_expr(
+                            builder.build_stack((index + j) as usize),
+                            builder.build_constant(1),
+                        ),
+                    ),
+                    builder.build_constant(0),
+                    RelOp::Eq,
+                ));
+            }
+            builder.build_assertion(builder.build_rel(
+                builder.build_symbolic_limb(0, (U254::N_LIMBS - i - 1) as usize),
+                expr,
+                RelOp::Eq,
+            ));
+            index += limb_size;
+        }
+        let script = script! {
+            {U254::push_verification_meta(MetaType::SymbolicVar(0))}
+            {U254::convert_to_be_bits()}
+            {add_assertions(&builder)}
+        };
+        dump_script(&script);
+    }
+
+    #[test]
+    fn check_convert_to_le_bits() {
+        pre_process("../data/bits/convert_to_le_bits.bs");
+        let mut builder = ConstraintBuilder::new();
+        let mut limb_size: u32 = 29;
+        let mut index = 0;
+        for i in 0..U254::N_LIMBS {
+            if i + 1 == U254::N_LIMBS {
+                limb_size = 22;
+            }
+            let mut expr = ValueExpr::Constant(0);
+            for j in 0..limb_size {
+                expr = builder.build_add_expr(
+                    expr.clone(),
+                    builder.build_mul_expr(
+                        builder.build_stack((index + j) as usize),
+                        builder.build_constant(1 << j as u128),
+                    ),
+                );
+                builder.build_assertion(builder.build_rel(
+                    builder.build_mul_expr(
+                        builder.build_sub_expr(
+                            builder.build_stack((index + j) as usize),
+                            builder.build_constant(0),
+                        ),
+                        builder.build_sub_expr(
+                            builder.build_stack((index + j) as usize),
+                            builder.build_constant(1),
+                        ),
+                    ),
+                    builder.build_constant(0),
+                    RelOp::Eq,
+                ));
+            }
+            builder.build_assertion(builder.build_rel(
+                builder.build_symbolic_limb(0, i as usize),
+                expr,
+                RelOp::Eq,
+            ));
+            index += limb_size;
+        }
+        let script = script! {
+            {U254::push_verification_meta(MetaType::SymbolicVar(0))}
+            {U254::convert_to_le_bits()}
+            {add_assertions(&builder)}
+        };
+        dump_script(&script);
+    }
+
+    #[test]
+    fn check_convert_to_be_bits_toaltstack() {
+        pre_process("../data/bits/convert_to_be_bits_toaltstack.bs");
+        let mut builder = ConstraintBuilder::new();
+        let mut limb_size: u32 = 29;
+        let mut index = 0;
+        for i in 0..U254::N_LIMBS {
+            if i + 1 == U254::N_LIMBS {
+                limb_size = 22;
+            }
+            let mut expr = ValueExpr::Constant(0);
+            for j in 0..limb_size {
+                expr = builder.build_add_expr(
+                    expr.clone(),
+                    builder.build_mul_expr(
+                        builder.build_alt_stack((index + j) as usize),
+                        builder.build_constant(1 << j as u128),
+                    ),
+                );
+                builder.build_assertion(builder.build_rel(
+                    builder.build_mul_expr(
+                        builder.build_sub_expr(
+                            builder.build_alt_stack((index + j) as usize),
+                            builder.build_constant(0),
+                        ),
+                        builder.build_sub_expr(
+                            builder.build_alt_stack((index + j) as usize),
+                            builder.build_constant(1),
+                        ),
+                    ),
+                    builder.build_constant(0),
+                    RelOp::Eq,
+                ));
+            }
+            builder.build_assertion(builder.build_rel(
+                builder.build_symbolic_limb(0, i as usize),
+                expr,
+                RelOp::Eq,
+            ));
+            index += limb_size;
+        }
+        let script = script! {
+            {U254::push_verification_meta(MetaType::SymbolicVar(0))}
+            {U254::convert_to_be_bits_toaltstack()}
+            {add_assertions(&builder)}
+        };
+        dump_script(&script);
+    }
+
+    #[test]
+    fn check_convert_to_le_bits_toaltstack() {
+        pre_process("../data/bits/convert_to_le_bits_toaltstack.bs");
+        let mut builder = ConstraintBuilder::new();
+        let mut limb_size: u32 = 22;
+        let mut index = 0;
+        for i in 0..U254::N_LIMBS {
+            if i != 0 {
+                limb_size = 29;
+            }
+            let mut expr = ValueExpr::Constant(0);
+            for j in 0..limb_size {
+                expr = builder.build_add_expr(
+                    expr.clone(),
+                    builder.build_mul_expr(
+                        builder.build_alt_stack((index + j) as usize),
+                        builder.build_constant(1 << (limb_size - j - 1) as u128),
+                    ),
+                );
+                builder.build_assertion(builder.build_rel(
+                    builder.build_mul_expr(
+                        builder.build_sub_expr(
+                            builder.build_alt_stack((index + j) as usize),
+                            builder.build_constant(0),
+                        ),
+                        builder.build_sub_expr(
+                            builder.build_alt_stack((index + j) as usize),
+                            builder.build_constant(1),
+                        ),
+                    ),
+                    builder.build_constant(0),
+                    RelOp::Eq,
+                ));
+            }
+            builder.build_assertion(builder.build_rel(
+                builder.build_symbolic_limb(0, (U254::N_LIMBS - i - 1) as usize),
+                expr,
+                RelOp::Eq,
+            ));
+            index += limb_size;
+        }
+        let script = script! {
+            {U254::push_verification_meta(MetaType::SymbolicVar(0))}
+            {U254::convert_to_le_bits_toaltstack()}
+            {add_assertions(&builder)}
+        };
+        dump_script(&script);
+    }
+
+    #[test]
+    fn check_limb_from_bytes() {
+        pre_process("../data/bits/limb_from_bytes.bs");
+        let mut builder = ConstraintBuilder::new();
+        for i in 0..4 {
+            builder.build_assumption(builder.build_stack_rel(
+                i as usize,
+                builder.build_constant(255),
+                RelOp::Le,
+            ));
+            builder.build_assumption(builder.build_stack_rel(
+                i as usize,
+                builder.build_constant(0),
+                RelOp::Ge,
+            ));
+        }
+        let mut expr = ValueExpr::Constant(0);
+        for i in 0..4 {
+            expr = builder.build_add_expr(
+                expr.clone(),
+                builder.build_mul_expr(
+                    builder.build_symbolic(i as usize),
+                    builder.build_constant(1 << (i * 8) as u128),
+                ),
+            );
+        }
+        builder.build_assertion(builder.build_stack_rel(0, expr, RelOp::Eq));
+        let script = script! {
+            for i in (0..4).rev(){
+                {U254::push_verification_meta(MetaType::SymbolicVar(i))}
+            }
+            {add_assumptions(&builder)}
+            {U254::limb_from_bytes()}
+            {add_assertions(&builder)}
+        };
+        dump_script(&script);
+    }
+
+    #[test]
+    fn check_from_bytes() {
+        pre_process("../data/bits/from_bytes.bs");
+        let mut builder = ConstraintBuilder::new();
+        for i in 0..4 * U254::N_LIMBS {
+            builder.build_assumption(builder.build_stack_rel(
+                i as usize,
+                builder.build_constant(255),
+                RelOp::Le,
+            ));
+            builder.build_assumption(builder.build_stack_rel(
+                i as usize,
+                builder.build_constant(0),
+                RelOp::Ge,
+            ));
+        }
+        for i in 0..U254::N_LIMBS {
+            let mut expr = ValueExpr::Constant(0);
+            for j in 0..4 {
+                expr = builder.build_add_expr(
+                    expr.clone(),
+                    builder.build_mul_expr(
+                        builder.build_symbolic((i * U254::N_LIMBS + j) as usize),
+                        builder.build_constant(1 << (j * 8) as u128),
+                    ),
+                );
+            }
+            builder.build_assertion(builder.build_stack_rel(i as usize, expr, RelOp::Eq));
+        }
+        let script = script! {
+            for i in (0..4*U254::N_LIMBS).rev(){
+                {U254::push_verification_meta(MetaType::SymbolicVar(i as usize))}
+            }
+            {add_assumptions(&builder)}
+            {U254::from_bytes()}
+            {add_assertions(&builder)}
+        };
+        dump_script(&script);
+    }
+
+    #[test]
+    fn check_div2() {
+        pre_process("../data/inv/div2.bs");
+        let mut builder = ConstraintBuilder::new();
+        let mut carry = ValueExpr::Constant(0);
+        for i in (0..U254::N_LIMBS).rev() {
+            builder.build_assertion(
+                builder.build_stack_rel(
+                    i as usize,
+                    builder.build_add_expr(
+                        builder
+                            .build_rshift_expr(
+                                builder.build_symbolic_limb(0, i as usize),
+                                builder.build_constant(1),
+                            )
+                            .unwrap(),
+                        builder.build_mul_expr(carry, builder.build_constant(1 << 28)),
+                    ),
+                    RelOp::Eq,
+                ),
+            );
+            carry = builder.build_mod_expr(
+                builder.build_symbolic_limb(0, i as usize),
+                builder.build_constant(2),
+            );
+        }
+        let script = script! {
+            {U254::push_verification_meta(MetaType::SymbolicVar(0))}
+            {U254::div2()}
+            {add_assertions(&builder)}
+        };
+        dump_script(&script);
+    }
+
+    #[test]
+    fn check_div2rem() {
+        pre_process("../data/inv/div2rem.bs");
+        let mut builder = ConstraintBuilder::new();
+        let mut carry = ValueExpr::Constant(0);
+
+        for i in (0..U254::N_LIMBS).rev() {
+            builder.build_assertion(
+                builder.build_stack_rel(
+                    (i + 1) as usize,
+                    builder.build_add_expr(
+                        builder
+                            .build_rshift_expr(
+                                builder.build_symbolic_limb(0, i as usize),
+                                builder.build_constant(1),
+                            )
+                            .unwrap(),
+                        builder.build_mul_expr(carry, builder.build_constant(1 << 28)),
+                    ),
+                    RelOp::Eq,
+                ),
+            );
+            carry = builder.build_mod_expr(
+                builder.build_symbolic_limb(0, i as usize),
+                builder.build_constant(2),
+            );
+        }
+        builder.build_assertion(builder.build_stack_rel(0, carry, RelOp::Eq));
+        let script = script! {
+            {U254::push_verification_meta(MetaType::SymbolicVar(0))}
+            {U254::div2rem()}
+            {add_assertions(&builder)}
+        };
+        dump_script(&script);
+    }
+
+    #[test]
+    fn check_div3() {
+        fn construct_3pow(n: usize) -> u128 {
+            let mut sum = 1;
+            for id in 0..n - 1 {
+                if id % 2 == 0 {
+                    sum = sum * 2;
+                } else {
+                    sum = (sum * 3) / 2;
+                }
+            }
+            sum
+        }
+        pre_process("../data/inv/div3.bs");
+        let mut builder = ConstraintBuilder::new();
+        let mut carry = ValueExpr::Constant(0);
+        for i in (0..U254::N_LIMBS).rev() {
+            builder.build_assertion(builder.build_stack_rel(
+                i as usize,
+                builder.build_add_expr(
+                    builder.build_div_expr(
+                        builder.build_symbolic_limb(0, i as usize),
+                        builder.build_constant(3),
+                    ),
+                    builder.build_mul_expr(carry, builder.build_constant(construct_3pow(28))),
+                ),
+                RelOp::Eq,
+            ));
+            carry = builder.build_mod_expr(
+                builder.build_symbolic_limb(0, i as usize),
+                builder.build_constant(3),
+            );
+        }
+        let script = script! {
+            {U254::push_verification_meta(MetaType::SymbolicVar(0))}
+            {U254::div3()}
+            {add_assertions(&builder)}
+        };
+        dump_script(&script);
+    }
+
+    #[test]
+    fn check_div3rem() {
+        fn construct_3pow(n: usize) -> u128 {
+            let mut sum = 1;
+            for id in 0..n - 1 {
+                if id % 2 == 0 {
+                    sum = sum * 2;
+                } else {
+                    sum = (sum * 3) / 2;
+                }
+            }
+            sum
+        }
+        pre_process("../data/inv/div3rem.bs");
+        let mut builder = ConstraintBuilder::new();
+        let mut carry = ValueExpr::Constant(0);
+        for i in (0..U254::N_LIMBS).rev() {
+            builder.build_assertion(builder.build_stack_rel(
+                (i + 1) as usize,
+                builder.build_add_expr(
+                    builder.build_div_expr(
+                        builder.build_symbolic_limb(0, i as usize),
+                        builder.build_constant(3),
+                    ),
+                    builder.build_mul_expr(carry, builder.build_constant(construct_3pow(28))),
+                ),
+                RelOp::Eq,
+            ));
+            carry = builder.build_mod_expr(
+                builder.build_symbolic_limb(0, i as usize),
+                builder.build_constant(3),
+            );
+        }
+        builder.build_assertion(builder.build_stack_rel(0, carry, RelOp::Eq));
+        let script = script! {
+            {U254::push_verification_meta(MetaType::SymbolicVar(0))}
+            {U254::div3rem()}
+            {add_assertions(&builder)}
+        };
+        dump_script(&script);
+    }
+
+    #[test]
+    fn check_inv_stage1() {
+        pre_process("../data/inv/inv_stage1.bs");
+        let mut builder = ConstraintBuilder::new();
+        builder.build_assertion(builder.build_rel(
+            builder.build_mod_expr(
+                builder.build_mul_expr(
+                    builder.build_stack_eq_u254_variable(1),
+                    builder.build_symbolic(1),
+                ),
+                builder.build_symbolic(0),
+            ),
+            builder.build_constant(1),
+            RelOp::Eq,
+        ));
+        let script = script! {
+            {U254::push_verification_meta(MetaType::SymbolicVar(0))} // modulus
+            {U254::push_verification_meta(MetaType::SymbolicVar(1))} // number
+            {U254::inv_stage1()}
             {add_assertions(&builder)}
         };
         dump_script(&script);

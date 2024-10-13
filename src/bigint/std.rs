@@ -302,6 +302,9 @@ impl<const N_BITS: u32, const LIMB_SIZE: u32> BigIntImpl<N_BITS, LIMB_SIZE> {
             MetaType::Assertion(index, expr) => {
                 writein_verified_meta(format!("ASSERT_{} {{ {} }}", index, expr.to_string()));
             }
+            MetaType::Assumption(index, expr) => {
+                writein_verified_meta(format!("ASSUME_{} {{ {} }}", index, expr.to_string()));
+            }
         }
 
         // NOTE: The deprecated instruction OP_SUBSTR, which was previously used in

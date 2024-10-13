@@ -89,7 +89,7 @@ impl<const N_BITS: u32, const LIMB_SIZE: u32> BigIntImpl<N_BITS, LIMB_SIZE> {
     }
 
     /// Double the BigInt on top of the stack
-    /// 
+    ///
     /// # Note
     ///
     /// This function allows overflow of the underlying integer types during
@@ -131,7 +131,7 @@ impl<const N_BITS: u32, const LIMB_SIZE: u32> BigIntImpl<N_BITS, LIMB_SIZE> {
 
             // When we got {limb} {base} {carry} on the stack, we drop the base
             OP_NIP // {limb} {carry}
-            { n + 9 } OP_PICK { limb_double_with_carry_allow_overflow(Self::HEAD_OFFSET) } 
+            { n + 9 } OP_PICK { limb_double_with_carry_allow_overflow(Self::HEAD_OFFSET) }
 
             // Take all limbs from the alt stack to the main stack
             for _ in 0..Self::N_LIMBS - 1 {
@@ -141,7 +141,7 @@ impl<const N_BITS: u32, const LIMB_SIZE: u32> BigIntImpl<N_BITS, LIMB_SIZE> {
     }
 
     /// Double the BigInt on top of the stack
-    /// 
+    ///
     /// # Note
     ///
     /// This function prevents overflow of the underlying integer types during
@@ -170,7 +170,7 @@ impl<const N_BITS: u32, const LIMB_SIZE: u32> BigIntImpl<N_BITS, LIMB_SIZE> {
     }
 
     /// Left shift the BigInt on top of the stack by `bits`
-    /// 
+    ///
     /// # Note
     ///
     /// This function prevents overflow of the underlying integer types during
@@ -204,11 +204,11 @@ impl<const N_BITS: u32, const LIMB_SIZE: u32> BigIntImpl<N_BITS, LIMB_SIZE> {
             OP_OVER
             OP_ADD
 
-            // OP_DEPTH OP_1SUB OP_PICK 
+            // OP_DEPTH OP_1SUB OP_PICK
             { 1 << LIMB_SIZE }
             OP_SWAP
 
-            { limb_add_create_carry() } 
+            { limb_add_create_carry() }
             OP_TOALTSTACK
 
             for i in 0..Self::N_LIMBS - 2 {
@@ -230,8 +230,6 @@ impl<const N_BITS: u32, const LIMB_SIZE: u32> BigIntImpl<N_BITS, LIMB_SIZE> {
         }
     }
 
-
-    
     /// Add BigInt on top of the stack to a BigInt at `b` depth in the stack
     ///
     /// # Note
@@ -245,11 +243,11 @@ impl<const N_BITS: u32, const LIMB_SIZE: u32> BigIntImpl<N_BITS, LIMB_SIZE> {
             { b_depth } OP_PICK
             OP_ADD
 
-            // OP_DEPTH OP_1SUB OP_PICK 
+            // OP_DEPTH OP_1SUB OP_PICK
             { 1 << LIMB_SIZE }
             OP_SWAP
 
-            { limb_add_create_carry() } 
+            { limb_add_create_carry() }
             OP_TOALTSTACK
 
             for _ in 0..Self::N_LIMBS - 2 {
@@ -371,7 +369,7 @@ pub fn limb_add_nocarry(head_offset: u32) -> Script {
 }
 
 fn limb_add_with_carry_prevent_overflow(head_offset: u32) -> Script {
-    script!{
+    script! {
         // {a} {b} {c:carry}
         OP_3DUP OP_ADD OP_ADD OP_NIP                         // {a} {b} {a+b+c}
         { head_offset >> 1 }                                 // {a} {b} {a+b+c} {x}
@@ -401,8 +399,8 @@ fn limb_double_without_carry() -> Script {
         OP_LESSTHANOREQUAL // {base} {2*limb} {base<=2*limb}
         OP_TUCK // {base} {base<=2*limb} {2*limb} {base<=2*limb}
         OP_IF
-            2 OP_PICK OP_SUB // {base} {base<=2*limb} {2*limb - base} 
-        OP_ENDIF // {base} {base<=2*limb} {2*limb} 
+            2 OP_PICK OP_SUB // {base} {base<=2*limb} {2*limb - base}
+        OP_ENDIF // {base} {base<=2*limb} {2*limb}
     }
 }
 
@@ -505,7 +503,7 @@ fn limb_lshift_with_carry_prevent_overflow(bits: u32, head: u32) -> Script {
             }
             OP_ADD
         }                                                    // {result_signed} | {x}
-        
+
         OP_FROMALTSTACK                                      // {result_signed} {x}
         OP_OVER                                              // {result_signed} {x} {result_signed}
         OP_2DUP OP_SWAP                                      // {result_signed} {x} {result_signed} {result_signed} {x}
@@ -628,5 +626,31 @@ mod test {
             };
             run(script);
         }
+    }
+
+    #[test]
+    fn test_lshift() {
+        let hex: &str = "#x0004000000000000000000000000000000000000000000000000000000000000";
+        let hex_str = &hex[2..];
+        let mut bytes = [0u8; 32];
+        hex::decode_to_slice(hex_str, &mut bytes).expect("Invalid hex string");
+
+        let mut result = [0u32; 8];
+        for i in 0..8 {
+            let j = 7 - i;
+            result[i] = u32::from_be_bytes([
+                bytes[j * 4],
+                bytes[j * 4 + 1],
+                bytes[j * 4 + 2],
+                bytes[j * 4 + 3],
+            ]);
+        }
+        let script = script! {
+            { U254::push_u32_le(&result) }
+            { U254::lshift_prevent_overflow(10) }
+            { U254::drop()}
+            OP_TRUE
+        };
+        run(script);
     }
 }
