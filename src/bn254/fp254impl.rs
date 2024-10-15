@@ -1663,6 +1663,6 @@ pub trait Fp254Impl {
     }
 
     fn toaltstack() -> Script { U254::toaltstack() }
-
+//bn254/fp254impl Fq
     fn fromaltstack() -> Script { U254::fromaltstack() }
 }
