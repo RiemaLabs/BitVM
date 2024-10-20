@@ -5,6 +5,12 @@ use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::Path;
 
+use bitcoin_script::Script;
+use serde_json::Value;
+
+use crate::bigint::U254;
+use crate::hash::blake3::S;
+
 // use serde_json::Value;
 
 const U254_POWERS: [&str; 9] = [
@@ -210,7 +216,108 @@ impl ConstraintBuilder {
         let expr: BoolExpr = self.build_stack_rel(0, self.build_constant(1), RelOp::Eq);
         self.build_assertion(expr);
     }
+    pub fn build_overflow_exp(&self, expr: ValueExpr, limb_size: usize) -> ValueExpr {
+        self.build_sub_expr(
+            expr.clone(),
+            self.build_if_expr(
+                self.build_rel(
+                    expr.clone(),
+                    self.build_constant(1 << limb_size as u128),
+                    RelOp::Ge,
+                ),
+                self.build_lshift_expr(
+                    self.build_rshift_expr(expr, self.build_constant(limb_size as u128)),
+                    self.build_constant(limb_size as u128),
+                ),
+                self.build_constant(0),
+            ),
+        )
+    }
+    pub fn build_lshift_symbolic_limb(
+        &self,
+        sym_index: usize,
+        bit: u128,
+        limb_index: usize,
+    ) -> ValueExpr {
+        let mut limb_size = 29;
+        let ignore_bound = bit as usize / limb_size;
+        if limb_index == U254::N_LIMBS as usize - 1 {
+            limb_size = 22;
+        }
+        if limb_index < ignore_bound {
+            self.build_constant(0)
+        } else {
+            let cur_index = limb_index - ignore_bound;
+            let shift = bit % 29 as u128;
+            if cur_index == 0 {
+                if (shift as usize) < limb_size {
+                    self.build_overflow_exp(
+                        self.build_lshift_expr(
+                            self.build_symbolic_limb(sym_index, cur_index),
+                            self.build_constant(shift),
+                        ),
+                        limb_size,
+                    )
+                } else {
+                    self.build_constant(0)
+                }
+            } else {
+                if limb_size == 29 {
+                    self.build_add_expr(
+                        self.build_overflow_exp(
+                            self.build_lshift_expr(
+                                self.build_symbolic_limb(sym_index, cur_index),
+                                self.build_constant(shift),
+                            ),
+                            limb_size,
+                        ),
+                        self.build_rshift_expr(
+                            self.build_symbolic_limb(sym_index, cur_index - 1),
+                            self.build_constant(29 - shift),
+                        ),
+                    )
+                } else {
+                    if (shift as usize) >= limb_size {
+                        self.build_overflow_exp(
+                            self.build_rshift_expr(
+                                self.build_symbolic_limb(sym_index, cur_index - 1),
+                                self.build_constant(29 - shift),
+                            ),
+                            limb_size,
+                        )
+                    } else {
+                        self.build_add_expr(
+                            self.build_overflow_exp(
+                                self.build_lshift_expr(
+                                    self.build_symbolic_limb(sym_index, cur_index),
+                                    self.build_constant(shift),
+                                ),
+                                limb_size,
+                            ),
+                            self.build_rshift_expr(
+                                self.build_symbolic_limb(sym_index, cur_index - 1),
+                                self.build_constant(29 - shift),
+                            ),
+                        )
+                    }
+                }
+            }
+        }
+    }
 
+    pub fn build_lshift_symbolic_stack_limb(
+        &self,
+        sid: usize,
+        sym_index: usize,
+        bit: u128,
+        limb_index: usize,
+    ) -> BoolExpr {
+        self.build_stack_rel(
+            sid + limb_index,
+            self.build_lshift_symbolic_limb(sym_index, bit, limb_index),
+            RelOp::Eq,
+        )
+    }
     pub fn build_stack_symbolic_limb_eq(&mut self, sid: usize, sym_id: usize, n_limbs: u32) {
         let size: usize = n_limbs as usize;
         for i in sid..sid + size {
@@ -256,7 +363,7 @@ impl ConstraintBuilder {
         self.build_stack_rel(0, if_else_expr, RelOp::Eq)
     }
 
-    fn build_rel(&self, lhs: ValueExpr, rhs: ValueExpr, rel: RelOp) -> BoolExpr {
+    pub fn build_rel(&self, lhs: ValueExpr, rhs: ValueExpr, rel: RelOp) -> BoolExpr {
         match rel {
             RelOp::Eq => BoolExpr::Eq(Box::new(lhs), Box::new(rhs)),
             RelOp::Neq => BoolExpr::Neq(Box::new(lhs), Box::new(rhs)),
@@ -287,6 +394,47 @@ impl ConstraintBuilder {
 
     pub fn build_symbolic(&self, index: usize) -> ValueExpr { ValueExpr::RefSymbolVar(index) }
 
+    pub fn build_bit_of_symbolic(&self, sym_index: usize, bit: u128) -> ValueExpr {
+        self.build_sub_expr(
+            self.build_symbolic(sym_index),
+            self.build_lshift_expr(
+                self.build_rshift_expr(self.build_symbolic(sym_index), self.build_constant(bit)),
+                self.build_constant(bit),
+            ),
+        )
+    }
+
+    pub fn build_bit_of_symbolic_limb(&self, sym_index: usize, bit: u128) -> ValueExpr {
+        let limb_index = bit / 29; // U254 : 29
+        let shift = bit % 29;
+        if shift == 1 {
+            self.build_sub_expr(
+                self.build_symbolic_limb(sym_index, limb_index as usize),
+                self.build_lshift_expr(
+                    self.build_rshift_expr(
+                        self.build_symbolic_limb(sym_index, limb_index as usize),
+                        self.build_constant(1),
+                    ),
+                    self.build_constant(1),
+                ),
+            )
+        } else {
+            self.build_sub_expr(
+                self.build_rshift_expr(
+                    self.build_symbolic_limb(sym_index, limb_index as usize),
+                    self.build_constant(shift - 1),
+                ),
+                self.build_lshift_expr(
+                    self.build_rshift_expr(
+                        self.build_symbolic_limb(sym_index, limb_index as usize),
+                        self.build_constant(shift),
+                    ),
+                    self.build_constant(1),
+                ),
+            )
+        }
+    }
+
     pub fn build_stack(&self, index: usize) -> ValueExpr { ValueExpr::RefStack(index) }
 
     pub fn build_alt_stack(&self, index: usize) -> ValueExpr { ValueExpr::RefAltStack(index) }
@@ -295,6 +443,12 @@ impl ConstraintBuilder {
         ValueExpr::RefSymbolLimb(sym_index, limb_index)
     }
     pub fn build_assertion(&mut self, expr: BoolExpr) { self.assertions.push(expr); }
+
+    pub fn dump_assertion(&self, expr: BoolExpr, index: &mut usize) -> Script {
+        let script = { U254::push_verification_meta(MetaType::Assertion(*index, expr)) };
+        *index += 1;
+        script
+    }
 
     pub fn build_assumption(&mut self, expr: BoolExpr) { self.assumptions.push(expr); }
     // Get the total number of assertions
@@ -327,8 +481,6 @@ mod test {
     use crate::bigint::U254;
     use crate::bn254::fp254impl::Fp254Impl;
     use crate::bn254::fq::Fq;
-    use ark_ff::Fp;
-    // use crate::pseudo::NMUL;
     use bitcoin_script::builder::Block;
     use bitcoin_script::Script;
     use bitcoin_script::*;
@@ -1927,6 +2079,73 @@ mod test {
             {U254::push_verification_meta(MetaType::SymbolicVar(0))}
             {U254::push_verification_meta(MetaType::SymbolicVar(1))}
             {U254::mul()}
+            {add_assertions(&builder)}
+        };
+        dump_script(&script);
+    }
+
+    #[test]
+    fn check_mul_ver() {
+        use std::array;
+        pre_process("../data/bigint/mul/mul_ver.bs");
+        let mut builder = ConstraintBuilder::new();
+        let mut exprs: [ValueExpr; 9] = array::from_fn(|_| ValueExpr::Constant(0));
+        for i in 0..U254::N_LIMBS as usize {
+            let mut limb_size = 29;
+            for j in 0..U254::N_LIMBS as usize {
+                if i + j >= U254::N_LIMBS as usize {
+                    break;
+                } else if i + j + 1 == U254::N_LIMBS as usize {
+                    limb_size = 22;
+                }
+                let limba = builder.build_symbolic_limb(0, i);
+                let limbb = builder.build_symbolic_limb(1, j);
+                exprs[i + j] = builder.build_add_expr(
+                    exprs[i + j].clone(),
+                    builder.build_mod_expr(
+                        builder.build_mul_expr(limba.clone(), limbb.clone()),
+                        builder.build_constant(1 << limb_size),
+                    ),
+                );
+                if i + j + 1 < U254::N_LIMBS as usize {
+                    if i + j + 1 == U254::N_LIMBS as usize - 1 {
+                        exprs[i + j + 1] = builder.build_add_expr(
+                            exprs[i + j + 1].clone(),
+                            builder.build_mod_expr(
+                                builder.build_rshift_expr(
+                                    builder.build_mul_expr(limba, limbb),
+                                    builder.build_constant(29),
+                                ),
+                                builder.build_constant(1 << 22),
+                            ),
+                        );
+                    } else {
+                        exprs[i + j + 1] = builder.build_add_expr(
+                            exprs[i + j + 1].clone(),
+                            builder.build_rshift_expr(
+                                builder.build_mul_expr(limba, limbb),
+                                builder.build_constant(29),
+                            ),
+                        );
+                    }
+                }
+            }
+        }
+        let mut limb_size = 29;
+        for i in 0..U254::N_LIMBS as usize {
+            if i == U254::N_LIMBS as usize - 1 {
+                limb_size = 22;
+            }
+            builder.build_assertion(builder.build_stack_rel(
+                i,
+                builder.build_mod_expr(exprs[i].clone(), builder.build_constant(1 << limb_size)),
+                RelOp::Eq,
+            ));
+        }
+        let script = script! {
+            {U254::push_verification_meta(MetaType::SymbolicVar(1))}
+            {U254::push_verification_meta(MetaType::SymbolicVar(0))}
+            {U254::mul_ver(&builder)}
             {add_assertions(&builder)}
         };
         dump_script(&script);
