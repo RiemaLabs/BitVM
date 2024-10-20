@@ -43,19 +43,19 @@ impl<const N_BITS: u32, const LIMB_SIZE: u32> BigIntImpl<N_BITS, LIMB_SIZE> {
         }
     }
 
-    pub fn mul_ver(builder: &ConstraintBuilder) -> Script {
+    pub fn mul_ver(builder: &mut ConstraintBuilder) -> Script {
         let mut index: usize = 0;
         let mut res_expr: [ValueExpr; 9] = array::from_fn(|_| ValueExpr::Constant(0)); // U254
         let mut carry = ValueExpr::Constant(0);
         fn init(
-            builder: &ConstraintBuilder,
+            builder: &mut ConstraintBuilder,
             i: usize,
             res_expr: &mut [ValueExpr; 9],
             index: &mut usize,
         ) -> Script {
             res_expr[i] = builder.build_if_expr(
                 builder.build_rel(
-                    builder.build_bit_of_symbolic_limb(0, 1),
+                    builder.build_bit_of_symbolic_limb(0, 0),
                     builder.build_constant(1),
                     RelOp::Eq,
                 ),
@@ -81,7 +81,7 @@ impl<const N_BITS: u32, const LIMB_SIZE: u32> BigIntImpl<N_BITS, LIMB_SIZE> {
         }
 
         fn add_res(
-            builder: &ConstraintBuilder,
+            builder: &mut ConstraintBuilder,
             i: usize,
             j: usize,
             index: &mut usize,
@@ -116,6 +116,7 @@ impl<const N_BITS: u32, const LIMB_SIZE: u32> BigIntImpl<N_BITS, LIMB_SIZE> {
                 ),
                 index,
             );
+            let attached_script: Script;
             if j != 8 {
                 *carry = builder.build_rshift_expr(
                     builder.build_add_expr(
@@ -136,25 +137,30 @@ impl<const N_BITS: u32, const LIMB_SIZE: u32> BigIntImpl<N_BITS, LIMB_SIZE> {
                     builder.build_constant(29),
                 );
             }
-            res_expr[j] = builder.build_overflow_exp(
-                builder.build_add_expr(
+
+            (res_expr[j], attached_script) =
+                builder.build_internal_var_subtitute_expr(builder.build_overflow_exp(
                     builder.build_add_expr(
-                        res_expr[j].clone(),
-                        builder.build_if_expr(
-                            builder.build_rel(
-                                builder.build_bit_of_symbolic_limb(0, i as u128),
-                                builder.build_constant(1),
-                                RelOp::Eq,
+                        builder.build_add_expr(
+                            res_expr[j].clone(),
+                            builder.build_if_expr(
+                                builder.build_rel(
+                                    builder.build_bit_of_symbolic_limb(0, i as u128),
+                                    builder.build_constant(1),
+                                    RelOp::Eq,
+                                ),
+                                builder.build_lshift_symbolic_limb(1, i as u128, j),
+                                builder.build_constant(0),
                             ),
-                            builder.build_lshift_symbolic_limb(1, i as u128, j),
-                            builder.build_constant(0),
                         ),
+                        (*carry).clone(),
                     ),
-                    (*carry).clone(),
-                ),
-                if j == 8 { 22 } else { 29 },
-            );
-            script
+                    if j == 8 { 22 } else { 29 },
+                ));
+            script! {
+                {script}
+                {attached_script}
+            }
         }
 
         script! {
@@ -192,11 +198,11 @@ impl<const N_BITS: u32, const LIMB_SIZE: u32> BigIntImpl<N_BITS, LIMB_SIZE> {
                     { Self::add(1, 0) }
                 OP_ENDIF
                 {
-                    add_res(&builder, i as usize, 0, &mut index, &mut carry, &mut res_expr)
+                    add_res(builder, i as usize, 0, &mut index, &mut carry, &mut res_expr)
                 }
                 for j in 1..(Self::N_LIMBS as usize) {
                     {
-                        add_res(&builder, i as usize, j, &mut index, &mut carry, &mut res_expr)
+                        add_res(builder, i as usize, j, &mut index, &mut carry, &mut res_expr)
                     }
                 }
                 for j in Self::N_LIMBS as usize..(Self::N_LIMBS * 2) as usize {

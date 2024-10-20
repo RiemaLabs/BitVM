@@ -47,6 +47,7 @@ pub fn writein_verified_meta(input: String) {
 #[derive(Clone)]
 pub enum MetaType {
     SymbolicVar(usize),
+    InternalVar(usize, ValueExpr),
     Assertion(usize, BoolExpr),
     Assumption(usize, BoolExpr),
 }
@@ -55,6 +56,7 @@ pub enum MetaType {
 pub enum ValueExpr {
     RefSymbolVar(usize),
     RefSymbolLimb(usize, usize),
+    RefInternalVar(usize),
     RefStack(usize),    // offset in main stack
     RefAltStack(usize), // offset in alt stack
     Constant(u128),     // TODO: Constants within 2^254
@@ -86,6 +88,7 @@ impl ValueExpr {
     pub fn to_string(&self) -> String {
         match self {
             ValueExpr::RefSymbolVar(i) => format!("v{}", i),
+            ValueExpr::RefInternalVar(i) => format!("i{}", i),
             ValueExpr::RefSymbolLimb(i, j) => format!("limbs{}[{}]", i, j),
             ValueExpr::RefStack(i) => format!("stack[{}]", i),
             ValueExpr::RefAltStack(i) => format!("altstack[{}]", i),
@@ -143,6 +146,7 @@ pub enum RelOp {
 pub struct ConstraintBuilder {
     assertions: Vec<BoolExpr>,
     assumptions: Vec<BoolExpr>,
+    internal_cnt: usize,
 }
 
 #[allow(dead_code)]
@@ -152,6 +156,7 @@ impl ConstraintBuilder {
         ConstraintBuilder {
             assertions: Vec::new(),
             assumptions: Vec::new(),
+            internal_cnt: 0,
         }
     }
 
@@ -171,6 +176,14 @@ impl ConstraintBuilder {
     pub fn build_symbol_var_rel(&self, index: usize, expr: ValueExpr, rel: RelOp) -> BoolExpr {
         let symbol_var_expr = ValueExpr::RefSymbolVar(index);
         self.build_rel(symbol_var_expr, expr, rel)
+    }
+
+    pub fn build_internal_var_subtitute_expr(&mut self, expr: ValueExpr) -> (ValueExpr, Script) {
+        self.internal_cnt += 1;
+        (
+            ValueExpr::RefInternalVar(self.internal_cnt),
+            U254::push_verification_meta(MetaType::InternalVar(self.internal_cnt, expr)),
+        )
     }
 
     pub fn build_mod_expr(&self, expr: ValueExpr, expr1: ValueExpr) -> ValueExpr {
@@ -405,34 +418,22 @@ impl ConstraintBuilder {
     }
 
     pub fn build_bit_of_symbolic_limb(&self, sym_index: usize, bit: u128) -> ValueExpr {
-        let limb_index = bit / 29; // U254 : 29
+        let limb_index = bit / 29;
         let shift = bit % 29;
-        if shift == 1 {
-            self.build_sub_expr(
+
+        self.build_sub_expr(
+            self.build_rshift_expr(
                 self.build_symbolic_limb(sym_index, limb_index as usize),
-                self.build_lshift_expr(
-                    self.build_rshift_expr(
-                        self.build_symbolic_limb(sym_index, limb_index as usize),
-                        self.build_constant(1),
-                    ),
-                    self.build_constant(1),
-                ),
-            )
-        } else {
-            self.build_sub_expr(
+                self.build_constant(shift),
+            ),
+            self.build_lshift_expr(
                 self.build_rshift_expr(
                     self.build_symbolic_limb(sym_index, limb_index as usize),
-                    self.build_constant(shift - 1),
+                    self.build_constant(shift + 1),
                 ),
-                self.build_lshift_expr(
-                    self.build_rshift_expr(
-                        self.build_symbolic_limb(sym_index, limb_index as usize),
-                        self.build_constant(shift),
-                    ),
-                    self.build_constant(1),
-                ),
-            )
-        }
+                self.build_constant(1),
+            ),
+        )
     }
 
     pub fn build_stack(&self, index: usize) -> ValueExpr { ValueExpr::RefStack(index) }
@@ -2145,7 +2146,7 @@ mod test {
         let script = script! {
             {U254::push_verification_meta(MetaType::SymbolicVar(1))}
             {U254::push_verification_meta(MetaType::SymbolicVar(0))}
-            {U254::mul_ver(&builder)}
+            {U254::mul_ver(&mut builder)}
             {add_assertions(&builder)}
         };
         dump_script(&script);
