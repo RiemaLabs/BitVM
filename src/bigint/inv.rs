@@ -1,6 +1,7 @@
-use crate::bigint::BigIntImpl;
 use crate::pseudo::OP_NDUP;
 use crate::treepp::*;
+use crate::{bigint::BigIntImpl, dump::ConstraintBuilder};
+use bitcoin::script;
 use core::ops::{Mul, Rem, Sub};
 use num_bigint::BigUint;
 use num_traits::Num;
@@ -34,6 +35,13 @@ impl<const N_BITS: u32, const LIMB_SIZE: u32> BigIntImpl<N_BITS, LIMB_SIZE> {
         }
     }
 
+    pub fn div3_inv(builder: &ConstraintBuilder) -> Script {
+        script! {
+            { Self::div3rem_inv(builder) }
+            OP_DROP
+        }
+    }
+
     pub fn div3rem() -> Script {
         script! {
             { Self::N_LIMBS - 1 } OP_ROLL
@@ -44,6 +52,20 @@ impl<const N_BITS: u32, const LIMB_SIZE: u32> BigIntImpl<N_BITS, LIMB_SIZE> {
                 { Self::N_LIMBS } OP_ROLL
                 OP_SWAP
                 { limb_div3_carry(LIMB_SIZE) }
+            }
+        }
+    }
+
+    pub fn div3rem_inv(builder: &ConstraintBuilder) -> Script {
+        script! {
+            { Self::N_LIMBS - 1 } OP_ROLL
+            0
+            { limb_div3_carry_inv(builder, Self::HEAD) }
+
+            for _ in 1..Self::N_LIMBS {
+                { Self::N_LIMBS } OP_ROLL
+                OP_SWAP
+                { limb_div3_carry_inv(builder,LIMB_SIZE) }
             }
         }
     }
@@ -327,6 +349,58 @@ pub fn limb_div3_carry(limb_size: u32) -> Script {
         cur *= 3;
     }
 
+    script! {
+        1 2 3 6 9 18 27 54
+        for _ in 0..k - 4 {
+            OP_2DUP OP_ADD
+            OP_DUP OP_DUP OP_ADD
+        }
+
+        { 2 * k } OP_ROLL OP_DUP
+        0 OP_GREATERTHAN
+        OP_IF
+            OP_1SUB
+            OP_IF
+                { y_remainder } { y_quotient }
+            OP_ELSE
+                { x_remainder } { x_quotient }
+            OP_ENDIF
+        OP_ELSE
+            0
+        OP_ENDIF
+        OP_TOALTSTACK
+
+        { 2 * k + 1 } OP_ROLL OP_ADD
+
+        for _ in 0..2 * k - 2 {
+            OP_2DUP OP_LESSTHANOREQUAL
+            OP_IF
+                OP_SWAP OP_SUB 2 OP_PICK OP_FROMALTSTACK OP_ADD OP_TOALTSTACK
+            OP_ELSE
+                OP_NIP
+            OP_ENDIF
+        }
+
+        OP_NIP OP_NIP OP_FROMALTSTACK OP_SWAP
+    }
+}
+
+pub fn limb_div3_carry_inv(builder: &ConstraintBuilder, limb_size: u32) -> Script {
+    let max_limb = (1 << limb_size) as i64;
+
+    let x_quotient = max_limb / 3;
+    let x_remainder = max_limb % 3;
+
+    let y_quotient = max_limb * 2 / 3;
+    let y_remainder = max_limb * 2 % 3;
+
+    let mut k = 0;
+    let mut cur = 1;
+    while cur < max_limb {
+        k += 1;
+        cur *= 3;
+    }
+    // let (ivar,script) = builder.build_internal_var_subtitute_expr();
     script! {
         1 2 3 6 9 18 27 54
         for _ in 0..k - 4 {

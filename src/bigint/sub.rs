@@ -1,4 +1,7 @@
+use bitcoin::opcodes::all::OP_ADD;
+
 use crate::bigint::BigIntImpl;
+use crate::dump::ConstraintBuilder;
 use crate::treepp::*;
 
 impl<const N_BITS: u32, const LIMB_SIZE: u32> BigIntImpl<N_BITS, LIMB_SIZE> {
@@ -31,6 +34,41 @@ impl<const N_BITS: u32, const LIMB_SIZE: u32> BigIntImpl<N_BITS, LIMB_SIZE> {
             }
         }
     }
+
+    // pub fn sub_inv(builder: &ConstraintBuilder, a: u32, b: u32) -> Script {
+    //     let script = script!{
+    //         OP_ADD
+    //     };
+    //     script! {
+    //         {Self::zip(a, b)}
+
+    //         { 1 << LIMB_SIZE }
+
+    //         // A0 - B0
+    //         limb_sub_borrow OP_TOALTSTACK
+
+    //         // from     A1      - (B1        + borrow_0)
+    //         //   to     A{N-2}  - (B{N-2}    + borrow_{N-3})
+    //         for _ in 0..Self::N_LIMBS - 2 {
+    //             OP_ROT
+    //             OP_ADD
+    //             OP_SWAP
+    //             limb_sub_borrow OP_TOALTSTACK
+    //         }
+
+    //         {
+    //             script
+    //         }
+    //         // A{N-1} - (B{N-1} + borrow_{N-2})
+    //         OP_NIP
+    //         OP_ADD
+    //         { limb_sub_noborrow(Self::HEAD_OFFSET) }
+
+    //         for _ in 0..Self::N_LIMBS - 1 {
+    //             OP_FROMALTSTACK
+    //         }
+    //     }
+    // }
 }
 
 /// Compute the difference of two limbs, including the carry bit
@@ -134,24 +172,24 @@ mod test {
             run(script);
         }
     }
-    
+
     #[test]
     fn test_sub_as_chunks() {
         let mut prng = ChaCha20Rng::seed_from_u64(0);
 
-            let a: BigUint = prng.sample(RandomBits::new(254));
-            let b: BigUint = prng.sample(RandomBits::new(254));
-            let mut c: BigUint = BigUint::one().shl(254) + &a - &b;
-            c = c.rem(BigUint::one().shl(254));
+        let a: BigUint = prng.sample(RandomBits::new(254));
+        let b: BigUint = prng.sample(RandomBits::new(254));
+        let mut c: BigUint = BigUint::one().shl(254) + &a - &b;
+        c = c.rem(BigUint::one().shl(254));
 
-            let script = script! {
-                { U254::push_u32_le(&a.to_u32_digits()) }
-                { U254::push_u32_le(&b.to_u32_digits()) }
-                { U254::sub(1, 0) }
-                { U254::push_u32_le(&c.to_u32_digits()) }
-                { U254::equalverify(1, 0) }
-                OP_TRUE
-            };
-            run_as_chunks(script, 500000, 1000)
+        let script = script! {
+            { U254::push_u32_le(&a.to_u32_digits()) }
+            { U254::push_u32_le(&b.to_u32_digits()) }
+            { U254::sub(1, 0) }
+            { U254::push_u32_le(&c.to_u32_digits()) }
+            { U254::equalverify(1, 0) }
+            OP_TRUE
+        };
+        run_as_chunks(script, 500000, 1000)
     }
 }

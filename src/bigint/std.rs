@@ -299,6 +299,9 @@ impl<const N_BITS: u32, const LIMB_SIZE: u32> BigIntImpl<N_BITS, LIMB_SIZE> {
                     i
                 ));
             }
+            MetaType::SingleSymbolicVar(i) => {
+                writein_verified_meta(format!("PUSH_SYMINT_{}", i));
+            }
             MetaType::InternalVar(i, expr) => {
                 writein_verified_meta(format!("DEFINE_{} {{ {} }}", i, expr.to_string()));
             }
