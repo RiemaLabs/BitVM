@@ -75,7 +75,7 @@ impl<const N_BITS: u32, const LIMB_SIZE: u32> BigIntImpl<N_BITS, LIMB_SIZE> {
             index: &mut usize,
         ) -> Script {
             builder.dump_assertion(
-                builder.build_lshift_symbolic_stack_limb(29, 1, i as u128, j - 9),
+                builder.build_lshift_symbolic_stack_limb(9, 1, i as u128, j - 9),
                 index,
             )
         }
@@ -91,53 +91,9 @@ impl<const N_BITS: u32, const LIMB_SIZE: u32> BigIntImpl<N_BITS, LIMB_SIZE> {
             if j == 0 {
                 *carry = ValueExpr::Constant(0);
             }
-            let script = builder.dump_assertion(
-                builder.build_stack_rel(
-                    j,
-                    builder.build_overflow_exp(
-                        builder.build_add_expr(
-                            builder.build_add_expr(
-                                res_expr[j].clone(),
-                                builder.build_if_expr(
-                                    builder.build_rel(
-                                        builder.build_bit_of_symbolic_limb(0, i as u128),
-                                        builder.build_constant(1),
-                                        RelOp::Eq,
-                                    ),
-                                    builder.build_stack(9 + j),
-                                    builder.build_constant(0),
-                                ),
-                            ),
-                            (*carry).clone(),
-                        ),
-                        if j == 8 { 22 } else { 29 },
-                    ),
-                    RelOp::Eq,
-                ),
-                index,
-            );
-            let attached_script: Script;
-            if j != 8 {
-                *carry = builder.build_rshift_expr(
-                    builder.build_add_expr(
-                        builder.build_add_expr(
-                            res_expr[j].clone(),
-                            builder.build_if_expr(
-                                builder.build_rel(
-                                    builder.build_bit_of_symbolic_limb(0, i as u128),
-                                    builder.build_constant(1),
-                                    RelOp::Eq,
-                                ),
-                                builder.build_stack(9 + j),
-                                builder.build_constant(0),
-                            ),
-                        ),
-                        (*carry).clone(),
-                    ),
-                    builder.build_constant(29),
-                );
-            }
 
+            let attached_script: Script;
+            let tmp_expr = res_expr[j].clone();
             (res_expr[j], attached_script) =
                 builder.build_internal_var_subtitute_expr(builder.build_overflow_exp(
                     builder.build_add_expr(
@@ -157,9 +113,33 @@ impl<const N_BITS: u32, const LIMB_SIZE: u32> BigIntImpl<N_BITS, LIMB_SIZE> {
                     ),
                     if j == 8 { 22 } else { 29 },
                 ));
+            let script = builder.dump_assertion(
+                builder.build_stack_rel(j, res_expr[j].clone(), RelOp::Eq),
+                index,
+            );
+            if j != 8 {
+                *carry = builder.build_rshift_expr(
+                    builder.build_add_expr(
+                        builder.build_add_expr(
+                            tmp_expr,
+                            builder.build_if_expr(
+                                builder.build_rel(
+                                    builder.build_bit_of_symbolic_limb(0, i as u128),
+                                    builder.build_constant(1),
+                                    RelOp::Eq,
+                                ),
+                                builder.build_lshift_symbolic_limb(1, i as u128, j),
+                                builder.build_constant(0),
+                            ),
+                        ),
+                        (*carry).clone(),
+                    ),
+                    builder.build_constant(29),
+                );
+            }
             script! {
-                {script}
                 {attached_script}
+                {script}
             }
         }
 
@@ -197,10 +177,7 @@ impl<const N_BITS: u32, const LIMB_SIZE: u32> BigIntImpl<N_BITS, LIMB_SIZE> {
                     { Self::copy(1) }
                     { Self::add(1, 0) }
                 OP_ENDIF
-                {
-                    add_res(builder, i as usize, 0, &mut index, &mut carry, &mut res_expr)
-                }
-                for j in 1..(Self::N_LIMBS as usize) {
+                for j in 0..(Self::N_LIMBS as usize) {
                     {
                         add_res(builder, i as usize, j, &mut index, &mut carry, &mut res_expr)
                     }
@@ -214,12 +191,25 @@ impl<const N_BITS: u32, const LIMB_SIZE: u32> BigIntImpl<N_BITS, LIMB_SIZE> {
 
             { Self::roll(1) }
             { Self::double(0) }
+            for j in 0..(Self::N_LIMBS) as usize {
+                {
+                    builder.dump_assertion(
+                        builder.build_lshift_symbolic_stack_limb(0, 1, N_BITS as u128 - 1, j),
+                        &mut index,
+                    )
+                }
+            }
             OP_FROMALTSTACK
             OP_IF
                 { Self::add(1, 0) }
             OP_ELSE
                 { Self::drop() }
             OP_ENDIF
+            for j in 0..(Self::N_LIMBS as usize) {
+                {
+                    add_res(builder, N_BITS as usize - 1, j, &mut index, &mut carry, &mut res_expr)
+                }
+            }
         }
     }
 }

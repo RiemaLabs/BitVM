@@ -57,6 +57,7 @@ pub enum ValueExpr {
     RefSymbolVar(usize),
     RefSymbolLimb(usize, usize),
     RefInternalVar(usize),
+    RefSymbolLimbBit(usize, usize, usize),
     RefStack(usize),    // offset in main stack
     RefAltStack(usize), // offset in alt stack
     Constant(u128),     // TODO: Constants within 2^254
@@ -90,6 +91,7 @@ impl ValueExpr {
             ValueExpr::RefSymbolVar(i) => format!("v{}", i),
             ValueExpr::RefInternalVar(i) => format!("i{}", i),
             ValueExpr::RefSymbolLimb(i, j) => format!("limbs{}[{}]", i, j),
+            ValueExpr::RefSymbolLimbBit(i, j, k) => format!("limbs{}[{}].({})", i, j, k),
             ValueExpr::RefStack(i) => format!("stack[{}]", i),
             ValueExpr::RefAltStack(i) => format!("altstack[{}]", i),
             ValueExpr::Constant(val) => format!("{}", val),
@@ -230,6 +232,10 @@ impl ConstraintBuilder {
         self.build_assertion(expr);
     }
     pub fn build_overflow_exp(&self, expr: ValueExpr, limb_size: usize) -> ValueExpr {
+        self.build_mod_expr(expr.clone(), self.build_constant(1 << limb_size as u128))
+    }
+
+    pub fn build_overflow_exp_shift(&self, expr: ValueExpr, limb_size: usize) -> ValueExpr {
         self.build_sub_expr(
             expr.clone(),
             self.build_if_expr(
@@ -261,7 +267,7 @@ impl ConstraintBuilder {
             self.build_constant(0)
         } else {
             let cur_index = limb_index - ignore_bound;
-            let shift = bit % 29 as u128;
+            let shift: u128 = bit % 29 as u128;
             if cur_index == 0 {
                 if (shift as usize) < limb_size {
                     self.build_overflow_exp(
@@ -418,6 +424,13 @@ impl ConstraintBuilder {
     }
 
     pub fn build_bit_of_symbolic_limb(&self, sym_index: usize, bit: u128) -> ValueExpr {
+        let limb_index = bit / 29;
+        let shift = bit % 29;
+
+        ValueExpr::RefSymbolLimbBit(sym_index, limb_index as usize, shift as usize)
+    }
+
+    pub fn build_bit_of_symbolic_limb_shiftver(&self, sym_index: usize, bit: u128) -> ValueExpr {
         let limb_index = bit / 29;
         let shift = bit % 29;
 
