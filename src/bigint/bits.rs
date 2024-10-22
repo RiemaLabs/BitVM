@@ -1,4 +1,7 @@
+use alloy::eips::eip4844::builder;
+
 use crate::bigint::BigIntImpl;
+use crate::dump::{ConstraintBuilder, RelOp};
 use crate::treepp::{script, Script};
 use std::cmp::min;
 
@@ -10,6 +13,42 @@ impl<const N_BITS: u32, const LIMB_SIZE: u32> BigIntImpl<N_BITS, LIMB_SIZE> {
                 { LIMB_SIZE * (i + 1) } OP_ROLL
             }
             { limb_to_be_bits(N_BITS - LIMB_SIZE * (Self::N_LIMBS - 1)) }
+        }
+    }
+
+    pub fn convert_to_be_bits_inv(builder: &ConstraintBuilder) -> Script {
+        let mut index = 0;
+
+        script! {
+            for i in 0..Self::N_LIMBS - 1 {
+                { limb_to_be_bits(LIMB_SIZE) }
+                for j in 0..LIMB_SIZE as usize {
+                    {
+                        builder.dump_assumption(
+                            builder.build_stack_rel(
+                                LIMB_SIZE as usize - j - 1,
+                                builder.build_symbolic_limb_bit(0, i as usize, j),
+                                RelOp::Eq,
+                            ),
+                            &mut index,
+                        )
+                    }
+                }
+                { LIMB_SIZE * (i + 1) } OP_ROLL
+            }
+            { limb_to_be_bits(N_BITS - LIMB_SIZE * (Self::N_LIMBS - 1)) }
+            for j in 0..(N_BITS - LIMB_SIZE * (Self::N_LIMBS - 1)) as usize {
+                {
+                    builder.dump_assumption(
+                        builder.build_stack_rel(
+                            (N_BITS - LIMB_SIZE * (Self::N_LIMBS - 1)) as usize - j - 1,
+                            builder.build_symbolic_limb_bit(0, Self::N_LIMBS as usize - 1, j),
+                            RelOp::Eq,
+                        ),
+                        &mut index,
+                    )
+                }
+            }
         }
     }
 
@@ -26,6 +65,44 @@ impl<const N_BITS: u32, const LIMB_SIZE: u32> BigIntImpl<N_BITS, LIMB_SIZE> {
         }
     }
 
+    pub fn convert_to_le_bits_inv(builder: &ConstraintBuilder) -> Script {
+        let mut index = 0;
+        script! {
+            for _ in 0..Self::N_LIMBS - 1 {
+                OP_TOALTSTACK
+            }
+            { limb_to_le_bits(N_BITS - LIMB_SIZE * (Self::N_LIMBS - 1)) }
+            for j in 0..(N_BITS - LIMB_SIZE * (Self::N_LIMBS - 1)) as usize {
+                {
+                    builder.dump_assumption(
+                        builder.build_stack_rel(
+                            j,
+                            builder.build_symbolic_limb_bit(0, Self::N_LIMBS as usize - 1, j),
+                            RelOp::Eq,
+                        ),
+                        &mut index,
+                    )
+                }
+            }
+            for i in 0..Self::N_LIMBS - 1 {
+                OP_FROMALTSTACK
+                { limb_to_le_bits(LIMB_SIZE) }
+                for j in 0..LIMB_SIZE as usize {
+                    {
+                        builder.dump_assumption(
+                            builder.build_stack_rel(
+                                j,
+                                builder.build_symbolic_limb_bit(0, Self::N_LIMBS as usize - 2 - i as usize, j),
+                                RelOp::Eq,
+                            ),
+                            &mut index,
+                        )
+                    }
+                }
+            }
+        }
+    }
+
     pub fn convert_to_be_bits_toaltstack() -> Script {
         script! {
             { Self::N_LIMBS - 1 } OP_ROLL
@@ -37,12 +114,82 @@ impl<const N_BITS: u32, const LIMB_SIZE: u32> BigIntImpl<N_BITS, LIMB_SIZE> {
         }
     }
 
+    pub fn convert_to_be_bits_toaltstack_inv(builder: &ConstraintBuilder) -> Script {
+        let mut index = 0;
+        script! {
+            { Self::N_LIMBS - 1 } OP_ROLL
+            { limb_to_be_bits_toaltstack(N_BITS - LIMB_SIZE * (Self::N_LIMBS - 1)) }
+            for j in 0..(N_BITS - LIMB_SIZE * (Self::N_LIMBS - 1)) as usize {
+                {
+                    builder.dump_assumption(
+                        builder.build_alt_stack_rel(
+                            j,
+                            builder.build_symbolic_limb_bit(0, Self::N_LIMBS as usize - 1, j),
+                            RelOp::Eq,
+                        ),
+                        &mut index,
+                    )
+                }
+            }
+            for i in 0..Self::N_LIMBS - 1 {
+                { Self::N_LIMBS - 2 - i } OP_ROLL
+                { limb_to_be_bits_toaltstack(LIMB_SIZE) }
+                for j in 0..LIMB_SIZE as usize {
+                    {
+                        builder.dump_assumption(
+                            builder.build_alt_stack_rel(
+                                j,
+                                builder.build_symbolic_limb_bit(0, Self::N_LIMBS as usize - 2 - i as usize, j),
+                                RelOp::Eq,
+                            ),
+                            &mut index,
+                        )
+                    }
+                }
+            }
+        }
+    }
+
     pub fn convert_to_le_bits_toaltstack() -> Script {
         script! {
             for _ in 0..Self::N_LIMBS - 1 {
                 { limb_to_le_bits_toaltstack(LIMB_SIZE) }
             }
             { limb_to_le_bits_toaltstack(N_BITS - LIMB_SIZE * (Self::N_LIMBS - 1)) }
+        }
+    }
+
+    pub fn convert_to_le_bits_toaltstack_inv(builder: &ConstraintBuilder) -> Script {
+        let mut index = 0;
+        script! {
+            for i in 0..Self::N_LIMBS - 1 {
+                { limb_to_le_bits_toaltstack(LIMB_SIZE) }
+                for j in 0..LIMB_SIZE as usize {
+                    {
+                        builder.dump_assumption(
+                            builder.build_alt_stack_rel(
+                                LIMB_SIZE as usize - j - 1,
+                                builder.build_symbolic_limb_bit(0, i as usize, j),
+                                RelOp::Eq,
+                            ),
+                            &mut index,
+                        )
+                    }
+                }
+            }
+            { limb_to_le_bits_toaltstack(N_BITS - LIMB_SIZE * (Self::N_LIMBS - 1)) }
+            for j in 0..(N_BITS - LIMB_SIZE * (Self::N_LIMBS - 1)) as usize {
+                {
+                    builder.dump_assumption(
+                        builder.build_alt_stack_rel(
+                            (N_BITS - LIMB_SIZE * (Self::N_LIMBS - 1)) as usize - j - 1,
+                            builder.build_symbolic_limb_bit(0, Self::N_LIMBS as usize - 1, j),
+                            RelOp::Eq,
+                        ),
+                        &mut index,
+                    )
+                }
+            }
         }
     }
 

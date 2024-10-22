@@ -8,6 +8,7 @@ use crate::bigint::u29x9::{
 use crate::bigint::U254;
 use crate::bn254::fq::Fq;
 use crate::bn254::utils::fq_to_bits;
+use crate::dump::ConstraintBuilder;
 use crate::pseudo::OP_256MUL;
 use crate::treepp::*;
 use ark_ff::{BigInteger, PrimeField};
@@ -114,13 +115,33 @@ pub trait Fp254Impl {
     fn convert_to_be_bits() -> Script { U254::convert_to_be_bits() }
 
     #[inline]
+    fn convert_to_be_bits_inv(builder: &ConstraintBuilder) -> Script {
+        U254::convert_to_be_bits_inv(builder)
+    }
+
+    #[inline]
     fn convert_to_be_bits_toaltstack() -> Script { U254::convert_to_be_bits_toaltstack() }
+
+    #[inline]
+    fn convert_to_be_bits_toaltstack_inv(builder: &ConstraintBuilder) -> Script {
+        U254::convert_to_be_bits_toaltstack_inv(builder)
+    }
 
     #[inline]
     fn convert_to_le_bits() -> Script { U254::convert_to_le_bits() }
 
     #[inline]
+    fn convert_to_le_bits_inv(builder: &ConstraintBuilder) -> Script {
+        U254::convert_to_le_bits_inv(builder)
+    }
+
+    #[inline]
     fn convert_to_le_bits_toaltstack() -> Script { U254::convert_to_le_bits_toaltstack() }
+
+    #[inline]
+    fn convert_to_le_bits_toaltstack_inv(builder: &ConstraintBuilder) -> Script {
+        U254::convert_to_le_bits_toaltstack_inv(builder)
+    }
 
     #[inline]
     fn push_modulus() -> Script { U254::push_hex(Self::MODULUS) }
@@ -524,7 +545,12 @@ pub trait Fp254Impl {
         }
     }
 
-    fn hinted_mul(mut a_depth: u32, mut a: ark_bn254::Fq, mut b_depth: u32, mut b: ark_bn254::Fq) -> (Script, Vec<Hint>) {
+    fn hinted_mul(
+        mut a_depth: u32,
+        mut a: ark_bn254::Fq,
+        mut b_depth: u32,
+        mut b: ark_bn254::Fq,
+    ) -> (Script, Vec<Hint>) {
         assert_ne!(a_depth, b_depth);
         if a_depth > b_depth {
             (a_depth, b_depth) = (b_depth, a_depth);
@@ -537,8 +563,8 @@ pub trait Fp254Impl {
         let modulus = &Fq::modulus_as_bigint();
         let q = (x * y) / modulus;
 
-        let script = script!{
-            for _ in 0..Self::N_LIMBS { 
+        let script = script! {
+            for _ in 0..Self::N_LIMBS {
                 OP_DEPTH OP_1SUB OP_ROLL // hints
             }
             // { fq_push(ark_bn254::Fq::from_str(&q.to_string()).unwrap()) }
@@ -559,8 +585,8 @@ pub trait Fp254Impl {
         let modulus = &Fq::modulus_as_bigint();
         let q = (x * y) / modulus;
 
-        let script = script!{
-            for _ in 0..Self::N_LIMBS { 
+        let script = script! {
+            for _ in 0..Self::N_LIMBS {
                 OP_DEPTH OP_1SUB OP_ROLL // hints
             }
             // { fq_push(ark_bn254::Fq::from_str(&q.to_string()).unwrap()) }
@@ -573,7 +599,12 @@ pub trait Fp254Impl {
         (script, hints)
     }
 
-    fn hinted_mul_keep_element(mut a_depth: u32, mut a: ark_bn254::Fq, mut b_depth: u32, mut b: ark_bn254::Fq) -> (Script, Vec<Hint>) {
+    fn hinted_mul_keep_element(
+        mut a_depth: u32,
+        mut a: ark_bn254::Fq,
+        mut b_depth: u32,
+        mut b: ark_bn254::Fq,
+    ) -> (Script, Vec<Hint>) {
         assert_ne!(a_depth, b_depth);
         if a_depth > b_depth {
             (a_depth, b_depth) = (b_depth, a_depth);
@@ -586,8 +617,8 @@ pub trait Fp254Impl {
         let modulus = &Fq::modulus_as_bigint();
         let q = (x * y) / modulus;
 
-        let script = script!{
-            for _ in 0..Self::N_LIMBS { 
+        let script = script! {
+            for _ in 0..Self::N_LIMBS {
                 OP_DEPTH OP_1SUB OP_ROLL // hints
             }
             // { fq_push(ark_bn254::Fq::from_str(&q.to_string()).unwrap()) }
@@ -652,7 +683,10 @@ pub trait Fp254Impl {
 
     fn mul_bucket() -> Script {
         let q_big = BigUint::from_str_radix(Fq::MODULUS, 16).unwrap();
-        let q_limbs = fq_to_bits(ark_ff::BigInt::<4>::from_str(&q_big.to_str_radix(10)).unwrap(), 4);
+        let q_limbs = fq_to_bits(
+            ark_ff::BigInt::<4>::from_str(&q_big.to_str_radix(10)).unwrap(),
+            4,
+        );
 
         script! {
                 // stack: {a} {b} {p}
@@ -795,11 +829,17 @@ pub trait Fp254Impl {
 
     fn mul_by_constant_bucket(constant: &Self::ConstantType) -> Script {
         let q_big = BigUint::from_str_radix(Fq::MODULUS, 16).unwrap();
-        let q_limbs = fq_to_bits(ark_ff::BigInt::<4>::from_str(&q_big.to_str_radix(10)).unwrap(), 4);
+        let q_limbs = fq_to_bits(
+            ark_ff::BigInt::<4>::from_str(&q_big.to_str_radix(10)).unwrap(),
+            4,
+        );
 
         let b = constant.to_string();
         let b_big = BigUint::from_str_radix(&b, 10).unwrap();
-        let b_limbs = fq_to_bits(ark_ff::BigInt::<4>::from_str(&b_big.to_str_radix(10)).unwrap(), 4);
+        let b_limbs = fq_to_bits(
+            ark_ff::BigInt::<4>::from_str(&b_big.to_str_radix(10)).unwrap(),
+            4,
+        );
         script! {
                 // stack: {a} {p}
                 { U254::toaltstack() }
@@ -1044,7 +1084,7 @@ pub trait Fp254Impl {
         let modulus = &Fq::modulus_as_bigint();
         let q = (x * x) / modulus;
         let script = script! {
-            for _ in 0..Self::N_LIMBS { 
+            for _ in 0..Self::N_LIMBS {
                 OP_DEPTH OP_1SUB OP_ROLL // hints
             }
             // { fq_push(ark_bn254::Fq::from_str(&q.to_string()).unwrap()) }
@@ -1076,10 +1116,10 @@ pub trait Fp254Impl {
         let y = &x.modinv(modulus).unwrap();
         let q = (x * y) / modulus;
         let script = script! {
-            for _ in 0..Self::N_LIMBS { 
+            for _ in 0..Self::N_LIMBS {
                 OP_DEPTH OP_1SUB OP_ROLL // hints
             }
-            for _ in 0..Self::N_LIMBS { 
+            for _ in 0..Self::N_LIMBS {
                 OP_DEPTH OP_1SUB OP_ROLL // hints
             }
             // { fq_push(ark_bn254::Fq::from_str(&y.to_string()).unwrap()) }
@@ -1663,6 +1703,6 @@ pub trait Fp254Impl {
     }
 
     fn toaltstack() -> Script { U254::toaltstack() }
-//bn254/fp254impl Fq
+    //bn254/fp254impl Fq
     fn fromaltstack() -> Script { U254::fromaltstack() }
 }

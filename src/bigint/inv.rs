@@ -1,3 +1,4 @@
+use crate::dump::RelOp;
 use crate::pseudo::OP_NDUP;
 use crate::treepp::*;
 use crate::{bigint::BigIntImpl, dump::ConstraintBuilder};
@@ -57,15 +58,39 @@ impl<const N_BITS: u32, const LIMB_SIZE: u32> BigIntImpl<N_BITS, LIMB_SIZE> {
     }
 
     pub fn div3rem_inv(builder: &ConstraintBuilder) -> Script {
+        let mut index = 0;
+
         script! {
             { Self::N_LIMBS - 1 } OP_ROLL
             0
-            { limb_div3_carry_inv(builder, Self::HEAD) }
-
-            for _ in 1..Self::N_LIMBS {
+            { limb_div3_carry_inv(builder, Self::HEAD,8,&mut index) }
+            {
+                builder.dump_assertion(
+                    builder.build_stack_rel(
+                        0,
+                        builder.build_mod_expr(
+                            builder.build_symbolic_limb(0, 8),
+                            builder.build_constant(3),
+                        ),
+                        RelOp::Eq,
+                    ),
+                    &mut index,
+                )
+            }
+            // stack: s_n .... s_0 -> stack: ..
+            // stack shape invariant :
+            // shape invariant -> value invariant
+            for i in 1..Self::N_LIMBS as usize {
                 { Self::N_LIMBS } OP_ROLL
                 OP_SWAP
-                { limb_div3_carry_inv(builder,LIMB_SIZE) }
+                {
+                    limb_div3_carry_inv(
+                        builder,
+                        LIMB_SIZE,
+                        Self::N_LIMBS as usize - i - 1,
+                        &mut index,
+                    )
+                }
             }
         }
     }
@@ -385,7 +410,12 @@ pub fn limb_div3_carry(limb_size: u32) -> Script {
     }
 }
 
-pub fn limb_div3_carry_inv(builder: &ConstraintBuilder, limb_size: u32) -> Script {
+pub fn limb_div3_carry_inv(
+    builder: &ConstraintBuilder,
+    limb_size: u32,
+    limb_id: usize,
+    index: &mut usize,
+) -> Script {
     let max_limb = (1 << limb_size) as i64;
 
     let x_quotient = max_limb / 3;
@@ -400,7 +430,7 @@ pub fn limb_div3_carry_inv(builder: &ConstraintBuilder, limb_size: u32) -> Scrip
         k += 1;
         cur *= 3;
     }
-    // let (ivar,script) = builder.build_internal_var_subtitute_expr();
+
     script! {
         1 2 3 6 9 18 27 54
         for _ in 0..k - 4 {
@@ -408,7 +438,9 @@ pub fn limb_div3_carry_inv(builder: &ConstraintBuilder, limb_size: u32) -> Scrip
             OP_DUP OP_DUP OP_ADD
         }
 
-        { 2 * k } OP_ROLL OP_DUP
+        { 2 * k } OP_ROLL
+
+        OP_DUP
         0 OP_GREATERTHAN
         OP_IF
             OP_1SUB
@@ -422,7 +454,14 @@ pub fn limb_div3_carry_inv(builder: &ConstraintBuilder, limb_size: u32) -> Scrip
         OP_ENDIF
         OP_TOALTSTACK
 
-        { 2 * k + 1 } OP_ROLL OP_ADD
+        { 2 * k + 1 } OP_ROLL
+        {
+            builder.dump_assertion(
+                builder.build_stack_rel(0, builder.build_symbolic_limb(0, limb_id), RelOp::Eq),
+                index,
+            )
+        }
+        OP_ADD
 
         for _ in 0..2 * k - 2 {
             OP_2DUP OP_LESSTHANOREQUAL
@@ -431,6 +470,19 @@ pub fn limb_div3_carry_inv(builder: &ConstraintBuilder, limb_size: u32) -> Scrip
             OP_ELSE
                 OP_NIP
             OP_ENDIF
+            {
+                builder.dump_assertion(
+                    builder.build_rel(
+                        builder.build_add_expr(
+                            builder.build_mul_expr(builder.build_alt_stack(0), builder.build_constant(3)),
+                            builder.build_stack(0),
+                        ),
+                        builder.build_symbolic_limb(0, limb_id),
+                        RelOp::Eq,
+                    ),
+                    index,
+                )
+            }
         }
 
         OP_NIP OP_NIP OP_FROMALTSTACK OP_SWAP
