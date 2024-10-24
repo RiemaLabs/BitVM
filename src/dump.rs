@@ -7,6 +7,7 @@ use std::path::Path;
 
 use crate::bigint::U254;
 use bitcoin_script::Script;
+use serde_json::Value;
 
 // use serde_json::Value;
 
@@ -60,6 +61,8 @@ pub enum ValueExpr {
     RefAltStack(usize), // offset in alt stack
     Constant(u128),     // TODO: Constants within 2^254
     BigConstant(String),
+    OpSha256(Box<ValueExpr>),
+    App(Box<ValueExpr>, Box<ValueExpr>),
     Add(Box<ValueExpr>, Box<ValueExpr>),
     Sub(Box<ValueExpr>, Box<ValueExpr>),
     Mul(Box<ValueExpr>, Box<ValueExpr>),
@@ -94,11 +97,13 @@ impl ValueExpr {
             ValueExpr::RefAltStack(i) => format!("altstack[{}]", i),
             ValueExpr::Constant(val) => format!("{}", val),
             ValueExpr::BigConstant(string) => string.clone(),
+            ValueExpr::App(lhs, rhs) => format!("({} ++ {})", lhs.to_string(), rhs.to_string()),
             ValueExpr::Add(lhs, rhs) => format!("({} + {})", lhs.to_string(), rhs.to_string()),
             ValueExpr::Sub(lhs, rhs) => format!("({} - {})", lhs.to_string(), rhs.to_string()),
             ValueExpr::Mul(lhs, rhs) => format!("({} * {})", lhs.to_string(), rhs.to_string()),
             ValueExpr::Div(lhs, rhs) => format!("({} / {})", lhs.to_string(), rhs.to_string()),
             ValueExpr::Mod(lhs, rhs) => format!("({} % {})", lhs.to_string(), rhs.to_string()),
+            ValueExpr::OpSha256(expr) => format!("(sha256 {})", expr.to_string()),
             ValueExpr::LShift(expr, shift) => {
                 format!("({} << {})", expr.to_string(), shift.to_string())
             }
@@ -198,6 +203,10 @@ impl ConstraintBuilder {
         ValueExpr::Mul(Box::new(expr), Box::new(expr1))
     }
 
+    pub fn build_app_expr(&self, expr: ValueExpr, expr1: ValueExpr) -> ValueExpr {
+        ValueExpr::App(Box::new(expr), Box::new(expr1))
+    }
+
     pub fn build_add_expr(&self, expr: ValueExpr, expr1: ValueExpr) -> ValueExpr {
         ValueExpr::Add(Box::new(expr), Box::new(expr1))
     }
@@ -225,6 +234,9 @@ impl ConstraintBuilder {
     pub fn build_or_rel(&self, cond: BoolExpr, cond1: BoolExpr) -> BoolExpr {
         BoolExpr::Or(Box::new(cond), Box::new(cond1))
     }
+
+    pub fn build_sha256(&self, expr: ValueExpr) -> ValueExpr { ValueExpr::OpSha256(Box::new(expr)) }
+
     pub fn build_check_top(&mut self) {
         let expr: BoolExpr = self.build_stack_rel(0, self.build_constant(1), RelOp::Eq);
         self.build_assertion(expr);
@@ -517,6 +529,7 @@ mod test {
     use crate::bn254::fp254impl::Fp254Impl;
     use crate::bn254::fq::Fq;
     use crate::stark::*;
+    use bitcoin::opcodes::all::OP_TOALTSTACK;
     use bitcoin_script::builder::Block;
     use bitcoin_script::Script;
     use bitcoin_script::*;
@@ -4399,6 +4412,126 @@ mod test {
                 )
             }
             {limb_to_be_bits_toaltstack_except_lowest_2bits(limb_size as u32)}
+            {add_assertions(&builder)}
+        };
+        dump_script(&script);
+    }
+
+    #[test]
+    fn check_verify() {
+        pre_process("../data/stark/verify.bs");
+        let mut builder = ConstraintBuilder::new();
+        let mut index = 0;
+        let logn = 12 - 1;
+        let mut expr: ValueExpr = builder.build_symbolic(2 * logn + 1);
+        for i in 0..logn {
+            expr = builder.build_if_expr(
+                builder.build_rel(
+                    builder.build_symbolic(logn - 1 - i),
+                    builder.build_constant(1),
+                    RelOp::Eq,
+                ),
+                builder.build_sha256(
+                    builder.build_app_expr(builder.build_symbolic(2 * logn - i), expr.clone()),
+                ),
+                builder.build_sha256(
+                    builder.build_app_expr(expr, builder.build_symbolic(2 * logn - i)),
+                ),
+            )
+        }
+        builder.build_assertion(builder.build_rel(expr, builder.build_symbolic(logn), RelOp::Eq));
+        let script = script! {
+            {U254::push_verification_meta(MetaType::SingleSymbolicVar(logn))} // root_hash
+            OP_TOALTSTACK
+            for i in 0..logn{
+                {U254::push_verification_meta(MetaType::SingleSymbolicVar(i))}
+                {
+                    builder.dump_assumption(
+                        builder.build_or_rel(
+                            builder.build_rel(
+                                builder.build_symbolic(i),
+                                builder.build_constant(1),
+                                RelOp::Eq,
+                            ),
+                            builder.build_rel(
+                                builder.build_symbolic(i),
+                                builder.build_constant(0),
+                                RelOp::Eq,
+                            ),
+                        ),
+                        &mut index,
+                    )
+                }
+                OP_TOALTSTACK
+            }
+            for i in logn+1..2*logn+1{
+                {U254::push_verification_meta(MetaType::SingleSymbolicVar(i))}
+            }
+            {U254::push_verification_meta(MetaType::SingleSymbolicVar(2*logn+1))} // left & right hash
+            {verify(logn)}
+            {add_assertions(&builder)}
+        };
+        dump_script(&script);
+    }
+
+    #[test]
+    fn check_query_and_verify_internal() {
+        pre_process("../data/stark/query_and_verify_internal.bs");
+        let mut builder = ConstraintBuilder::new();
+        let mut index = 0;
+        let len = 4;
+        let logn = 12 - 1;
+        let mut expr: ValueExpr = builder.build_symbolic(2 * logn + 1);
+        for i in 0..logn {
+            expr = builder.build_if_expr(
+                builder.build_rel(
+                    builder.build_symbolic(logn - 1 - i),
+                    builder.build_constant(1),
+                    RelOp::Eq,
+                ),
+                builder.build_sha256(
+                    builder.build_app_expr(builder.build_symbolic(2 * logn - i), expr.clone()),
+                ),
+                builder.build_sha256(
+                    builder.build_app_expr(expr, builder.build_symbolic(2 * logn - i)),
+                ),
+            )
+        }
+        builder.build_assertion(builder.build_rel(expr, builder.build_symbolic(logn), RelOp::Eq));
+        let script = script! {
+            {U254::push_verification_meta(MetaType::SingleSymbolicVar(logn))} // root_hash
+            OP_TOALTSTACK
+            for i in 0..logn{
+                {U254::push_verification_meta(MetaType::SingleSymbolicVar(i))}
+                {
+                    builder.dump_assumption(
+                        builder.build_or_rel(
+                            builder.build_rel(
+                                builder.build_symbolic(i),
+                                builder.build_constant(1),
+                                RelOp::Eq,
+                            ),
+                            builder.build_rel(
+                                builder.build_symbolic(i),
+                                builder.build_constant(0),
+                                RelOp::Eq,
+                            ),
+                        ),
+                        &mut index,
+                    )
+                }
+                OP_TOALTSTACK
+            }
+            for i in 2*logn+1 ..2*logn+len{
+                {U254::push_verification_meta(MetaType::SingleSymbolicVar(i))}
+            }
+            for i in 2*logn+len..2*logn+2*len{
+                {U254::push_verification_meta(MetaType::SingleSymbolicVar(i))}
+            }
+            for i in logn+1..2*logn+1{
+                {U254::push_verification_meta(MetaType::SingleSymbolicVar(i))}
+            }
+            {query_and_verify_internal(len,logn)}
             {add_assertions(&builder)}
         };
         dump_script(&script);
