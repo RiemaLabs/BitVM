@@ -5,11 +5,8 @@ use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::Path;
 
-use bitcoin_script::Script;
-use serde_json::Value;
-
 use crate::bigint::U254;
-use crate::hash::blake3::S;
+use bitcoin_script::Script;
 
 // use serde_json::Value;
 
@@ -3747,7 +3744,7 @@ mod test {
     fn check_bn254_is_field() {
         pre_process("../data/bn254/fp254impl/is_field.bs");
         let mut builder = ConstraintBuilder::new();
-        let assertion = builder.build_if_symbol_cond_top(0, |expr| {
+        let assertion = builder.build_if_symbol_cond_top(0, |_| {
             builder.build_and_rel(
                 builder.build_rel(
                     builder.build_symbolic(0),
@@ -3901,10 +3898,7 @@ mod test {
         for i in 0..3 * U254::N_LIMBS as usize {
             let assertion = builder.build_stack_rel(
                 i,
-                builder.build_symbolic_limb(
-                    i / (U254::N_LIMBS as usize),
-                    (i % U254::N_LIMBS as usize),
-                ),
+                builder.build_symbolic_limb(i / U254::N_LIMBS as usize, i % U254::N_LIMBS as usize),
                 RelOp::Eq,
             );
             builder.build_assertion(assertion);
