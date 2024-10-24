@@ -148,7 +148,6 @@ impl<const N_BITS: u32, const LIMB_SIZE: u32> BigIntImpl<N_BITS, LIMB_SIZE> {
 
             { push_to_stack(0,Self::N_LIMBS as usize) }
 
-
             OP_FROMALTSTACK
             OP_IF
                 { Self::copy(1) }

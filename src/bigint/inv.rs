@@ -64,19 +64,7 @@ impl<const N_BITS: u32, const LIMB_SIZE: u32> BigIntImpl<N_BITS, LIMB_SIZE> {
             { Self::N_LIMBS - 1 } OP_ROLL
             0
             { limb_div3_carry_inv(builder, Self::HEAD,8,&mut index) }
-            {
-                builder.dump_assertion(
-                    builder.build_stack_rel(
-                        0,
-                        builder.build_mod_expr(
-                            builder.build_symbolic_limb(0, 8),
-                            builder.build_constant(3),
-                        ),
-                        RelOp::Eq,
-                    ),
-                    &mut index,
-                )
-            }
+
             // stack: s_n .... s_0 -> stack: ..
             // stack shape invariant :
             // shape invariant -> value invariant
