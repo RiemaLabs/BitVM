@@ -516,6 +516,7 @@ mod test {
     use crate::bn254::curves::G1Projective;
     use crate::bn254::fp254impl::Fp254Impl;
     use crate::bn254::fq::Fq;
+    use crate::stark::*;
     use bitcoin_script::builder::Block;
     use bitcoin_script::Script;
     use bitcoin_script::*;
@@ -3999,6 +4000,405 @@ mod test {
         let script = script! {
             {U254::push_verification_meta(MetaType::SymbolicVar(0))}
             {Fq::div2()}
+            {add_assertions(&builder)}
+        };
+        dump_script(&script);
+    }
+
+    #[test]
+    fn check_stark_hint() {
+        pre_process("../data/stark/hint.bs");
+        let mut builder = ConstraintBuilder::new();
+        let depth = 16;
+        builder.build_assertion(builder.build_stack_rel(0, builder.build_symbolic(0), RelOp::Eq));
+        for i in 1..=depth {
+            builder.build_assertion(builder.build_stack_rel(
+                i,
+                builder.build_symbolic(depth - i + 1),
+                RelOp::Eq,
+            ));
+        }
+        let script = script! {
+            for i in 0..=depth{
+                {U254::push_verification_meta(MetaType::SingleSymbolicVar(i))}
+            }
+            {OP_HINT()}
+            {add_assertions(&builder)}
+        };
+        dump_script(&script);
+    }
+
+    #[test]
+    fn check_is_0_or_1() {
+        pre_process("../data/stark/check_0_or_1.bs");
+        let mut builder = ConstraintBuilder::new();
+        builder.build_assertion(builder.build_or_rel(
+            builder.build_rel(
+                builder.build_symbolic(0),
+                builder.build_constant(0),
+                RelOp::Eq,
+            ),
+            builder.build_rel(
+                builder.build_symbolic(0),
+                builder.build_constant(1),
+                RelOp::Eq,
+            ),
+        ));
+        let script = script! {
+            {U254::push_verification_meta(MetaType::SingleSymbolicVar(0))}
+            {check_0_or_1()}
+            {add_assertions(&builder)}
+        };
+        dump_script(&script);
+    }
+
+    #[test]
+    fn check_decompose_positions_gadget() {
+        pre_process("../data/stark/decompose_positions_gadget.bs");
+        let mut builder = ConstraintBuilder::new();
+        let bits = 29;
+        let mut expr = builder.build_symbolic(0);
+        builder.build_assertion(builder.build_stack_rel(0, expr.clone(), RelOp::Eq));
+        for i in 1..=bits {
+            expr = builder.build_add_expr(
+                builder.build_mul_expr(builder.build_constant(2), expr.clone()),
+                builder.build_symbolic(i),
+            );
+            builder.build_assertion(builder.build_or_rel(
+                builder.build_rel(
+                    builder.build_symbolic(i),
+                    builder.build_constant(0),
+                    RelOp::Eq,
+                ),
+                builder.build_rel(
+                    builder.build_symbolic(i),
+                    builder.build_constant(1),
+                    RelOp::Eq,
+                ),
+            ));
+            if i != bits {
+                builder.build_assertion(builder.build_stack_rel(i, expr.clone(), RelOp::Eq));
+            }
+        }
+        builder.build_assertion(builder.build_rel(
+            builder.build_symbolic(bits + 1),
+            expr.clone(),
+            RelOp::Eq,
+        ));
+        let script = script! {
+            {U254::push_verification_meta(MetaType::SingleSymbolicVar(bits+1))}
+            for i in (1..=bits).rev(){
+                {U254::push_verification_meta(MetaType::SingleSymbolicVar(i))}
+            }
+            {U254::push_verification_meta(MetaType::SingleSymbolicVar(0))}
+            {decompose_positions_gadget(bits as u32)}
+            {add_assertions(&builder)}
+        };
+        dump_script(&script);
+    }
+
+    #[test]
+    fn check_skip_one_and_extract_bits_gadget() {
+        pre_process("../data/stark/skip_one_and_extract_bits_gadget.bs");
+        let mut builder = ConstraintBuilder::new();
+        let bits = 29;
+        let mut expr = builder.build_symbolic(0);
+        for i in 1..=bits + 1 {
+            expr = builder.build_add_expr(
+                builder.build_mul_expr(builder.build_constant(2), expr.clone()),
+                builder.build_symbolic(i),
+            );
+            builder.build_assertion(builder.build_or_rel(
+                builder.build_rel(
+                    builder.build_symbolic(i),
+                    builder.build_constant(0),
+                    RelOp::Eq,
+                ),
+                builder.build_rel(
+                    builder.build_symbolic(i),
+                    builder.build_constant(1),
+                    RelOp::Eq,
+                ),
+            ));
+        }
+        builder.build_assertion(builder.build_rel(
+            builder.build_symbolic(bits + 2),
+            expr.clone(),
+            RelOp::Eq,
+        ));
+        let script = script! {
+            {U254::push_verification_meta(MetaType::SingleSymbolicVar(bits+2))}
+            for i in (1..=bits+1).rev(){
+                {U254::push_verification_meta(MetaType::SingleSymbolicVar(i))}
+            }
+            {U254::push_verification_meta(MetaType::SingleSymbolicVar(0))}
+            {skip_one_and_extract_bits_gadget(bits as u32)}
+            {add_assertions(&builder)}
+        };
+        dump_script(&script);
+    }
+
+    #[test]
+    fn check_qm31_reverse() {
+        pre_process("../data/stark/qm31_reverse.bs");
+        let mut builder = ConstraintBuilder::new();
+        builder.build_assertion(builder.build_stack_rel(0, builder.build_symbolic(0), RelOp::Eq));
+        builder.build_assertion(builder.build_stack_rel(1, builder.build_symbolic(1), RelOp::Eq));
+        builder.build_assertion(builder.build_stack_rel(2, builder.build_symbolic(2), RelOp::Eq));
+        builder.build_assertion(builder.build_stack_rel(3, builder.build_symbolic(3), RelOp::Eq));
+        let script = script! {
+            {U254::push_verification_meta(MetaType::SingleSymbolicVar(0))}
+            {U254::push_verification_meta(MetaType::SingleSymbolicVar(1))}
+            {U254::push_verification_meta(MetaType::SingleSymbolicVar(2))}
+            {U254::push_verification_meta(MetaType::SingleSymbolicVar(3))}
+            {qm31_reverse()}
+            {add_assertions(&builder)}
+        };
+        dump_script(&script);
+    }
+
+    #[test]
+    fn check_copy_to_altstack_top_item_first_in_gadget() {
+        pre_process("../data/stark/copy_to_altstack_top_item_first_in_gadget.bs");
+        let mut builder = ConstraintBuilder::new();
+        let depth = 10;
+        for i in 0..depth {
+            builder.build_assertion(builder.build_alt_stack_rel(
+                i,
+                builder.build_symbolic(i),
+                RelOp::Eq,
+            ));
+        }
+        let script = script! {
+            for i in 0..depth{
+                {U254::push_verification_meta(MetaType::SingleSymbolicVar(i))}
+            }
+            {copy_to_altstack_top_item_first_in_gadget(depth)}
+            {add_assertions(&builder)}
+        };
+        dump_script(&script);
+    }
+
+    #[test]
+    fn check_m31_vec_from_bottom_gadget() {
+        pre_process("../data/stark/m31_vec_from_bottom_gadget.bs");
+        let mut builder = ConstraintBuilder::new();
+        let len = 32;
+        for i in 0..len {
+            builder.build_assertion(builder.build_stack_rel(
+                i,
+                builder.build_symbolic(i + 10),
+                RelOp::Eq,
+            ));
+        }
+        for i in 0..10 {
+            builder.build_assertion(builder.build_stack_rel(
+                i + len,
+                builder.build_symbolic(i),
+                RelOp::Eq,
+            ));
+        }
+        let script = script! {
+            for i in (0..len+10).rev(){
+                {U254::push_verification_meta(MetaType::SingleSymbolicVar(i))}
+            }
+            {m31_vec_from_bottom_gadget(len)}
+            {add_assertions(&builder)}
+        };
+        dump_script(&script);
+    }
+
+    #[test]
+    fn check_dup_m31_vec_gadget() {
+        pre_process("../data/stark/dup_m31_vec_gadget.bs");
+        let mut builder = ConstraintBuilder::new();
+        let len = 32;
+        for i in 0..len {
+            builder.build_assertion(builder.build_stack_rel(
+                i,
+                builder.build_symbolic(i),
+                RelOp::Eq,
+            ));
+        }
+        for i in 0..len {
+            builder.build_assertion(builder.build_stack_rel(
+                i + len,
+                builder.build_symbolic(i),
+                RelOp::Eq,
+            ));
+        }
+        let script = script! {
+            for i in (0..len).rev(){
+                {U254::push_verification_meta(MetaType::SingleSymbolicVar(i))}
+            }
+            {dup_m31_vec_gadget(len)}
+            {add_assertions(&builder)}
+        };
+        dump_script(&script);
+    }
+
+    #[test]
+    fn check_limb_to_le_bits() {
+        pre_process("../data/stark/limb_to_le_bits.bs");
+        let mut builder = ConstraintBuilder::new();
+        let limb_size = 29;
+        for i in 0..limb_size {
+            builder.build_assertion(builder.build_stack_rel(
+                i,
+                builder.build_bit_of_symbolic(0, i as u128),
+                RelOp::Eq,
+            ));
+        }
+
+        let mut index = 0;
+
+        let script = script! {
+            {U254::push_verification_meta(MetaType::SingleSymbolicVar(0))}
+            {
+                builder.dump_assumption(
+                    builder.build_and_rel(
+                        builder.build_rel(
+                            builder.build_symbolic(0),
+                            builder.build_constant(1 << limb_size),
+                            RelOp::Lt,
+                        ),
+                        builder.build_rel(
+                            builder.build_symbolic(0),
+                            builder.build_constant(0),
+                            RelOp::Ge,
+                        ),
+                    ),
+                    &mut index,
+                )
+            }
+            {limb_to_le_bits_stark(limb_size as u32)}
+            {add_assertions(&builder)}
+        };
+        dump_script(&script);
+    }
+
+    #[test]
+    fn check_limb_to_be_bits_toaltstack_common() {
+        pre_process("../data/stark/limb_to_be_bits_toaltstack_common.bs");
+        let mut builder = ConstraintBuilder::new();
+        let limb_size = 29;
+        for i in 2..limb_size {
+            builder.build_assertion(builder.build_alt_stack_rel(
+                i - 2,
+                builder.build_bit_of_symbolic(0, i as u128),
+                RelOp::Eq,
+            ));
+        }
+        for i in 0..2 {
+            builder.build_assertion(builder.build_stack_rel(
+                i,
+                builder.build_bit_of_symbolic(0, 1 - i as u128),
+                RelOp::Eq,
+            ));
+        }
+
+        let mut index = 0;
+
+        let script = script! {
+            {U254::push_verification_meta(MetaType::SingleSymbolicVar(0))}
+            {
+                builder.dump_assumption(
+                    builder.build_and_rel(
+                        builder.build_rel(
+                            builder.build_symbolic(0),
+                            builder.build_constant(1 << limb_size),
+                            RelOp::Lt,
+                        ),
+                        builder.build_rel(
+                            builder.build_symbolic(0),
+                            builder.build_constant(0),
+                            RelOp::Ge,
+                        ),
+                    ),
+                    &mut index,
+                )
+            }
+            {limb_to_be_bits_toaltstack_common(limb_size as u32)}
+            {add_assertions(&builder)}
+        };
+        dump_script(&script);
+    }
+
+    #[test]
+    fn check_limb_to_be_bits_toaltstack_except_lowest_1bit() {
+        pre_process("../data/stark/limb_to_be_bits_toaltstack_except_lowest_1bit.bs");
+        let mut builder = ConstraintBuilder::new();
+        let limb_size = 29;
+        for i in 1..limb_size {
+            builder.build_assertion(builder.build_alt_stack_rel(
+                i - 1,
+                builder.build_bit_of_symbolic(0, i as u128),
+                RelOp::Eq,
+            ));
+        }
+
+        let mut index = 0;
+
+        let script = script! {
+            {U254::push_verification_meta(MetaType::SingleSymbolicVar(0))}
+            {
+                builder.dump_assumption(
+                    builder.build_and_rel(
+                        builder.build_rel(
+                            builder.build_symbolic(0),
+                            builder.build_constant(1 << limb_size),
+                            RelOp::Lt,
+                        ),
+                        builder.build_rel(
+                            builder.build_symbolic(0),
+                            builder.build_constant(0),
+                            RelOp::Ge,
+                        ),
+                    ),
+                    &mut index,
+                )
+            }
+            {limb_to_be_bits_toaltstack_except_lowest_1bit(limb_size as u32)}
+            {add_assertions(&builder)}
+        };
+        dump_script(&script);
+    }
+
+    #[test]
+    fn check_limb_to_be_bits_toaltstack_except_lowest_2bits() {
+        pre_process("../data/stark/limb_to_be_bits_toaltstack_except_lowest_2bits.bs");
+        let mut builder = ConstraintBuilder::new();
+        let limb_size = 29;
+        for i in 2..limb_size {
+            builder.build_assertion(builder.build_alt_stack_rel(
+                i - 2,
+                builder.build_bit_of_symbolic(0, i as u128),
+                RelOp::Eq,
+            ));
+        }
+
+        let mut index = 0;
+
+        let script = script! {
+            {U254::push_verification_meta(MetaType::SingleSymbolicVar(0))}
+            {
+                builder.dump_assumption(
+                    builder.build_and_rel(
+                        builder.build_rel(
+                            builder.build_symbolic(0),
+                            builder.build_constant(1 << limb_size),
+                            RelOp::Lt,
+                        ),
+                        builder.build_rel(
+                            builder.build_symbolic(0),
+                            builder.build_constant(0),
+                            RelOp::Ge,
+                        ),
+                    ),
+                    &mut index,
+                )
+            }
+            {limb_to_be_bits_toaltstack_except_lowest_2bits(limb_size as u32)}
             {add_assertions(&builder)}
         };
         dump_script(&script);

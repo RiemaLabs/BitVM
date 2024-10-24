@@ -118,7 +118,7 @@ pub fn m31_vec_from_bottom_gadget(len: usize) -> Script {
     }
 }
 
-pub fn limb_to_le_bits(num_bits: u32) -> Script {
+pub fn limb_to_le_bits_stark(num_bits: u32) -> Script {
     assert!(num_bits >= 2);
     let min_i = min(22, num_bits - 1);
     script! {
@@ -167,7 +167,7 @@ pub fn limb_to_le_bits(num_bits: u32) -> Script {
     }
 }
 
-fn limb_to_be_bits_toaltstack_common(num_bits: u32) -> Script {
+pub fn limb_to_be_bits_toaltstack_common(num_bits: u32) -> Script {
     assert!(num_bits >= 2);
     let min_i = min(22, num_bits - 1);
     script! {
@@ -244,48 +244,51 @@ pub fn hash_m31_vec_gadget(len: usize) -> Script {
 
 pub(crate) fn query_and_verify_internal(len: usize, logn: usize) -> Script {
     script! {
-        // left
+        // left right path | root_hash pos_(logn-1 .. 1)
         { m31_vec_from_bottom_gadget(len) }
+        // right path left_(3..0) | root_hash pos_(logn-1 .. 1)
 
         // duplicate the left
         { dup_m31_vec_gadget(len) }
+        // right path left left | root_hash pos_(logn-1 .. 1)
 
         // hash the left and keep the hash in the altstack
         { hash_m31_vec_gadget(len) }
         hash
+        // right path left left_hash | root_hash pos_(logn-1 .. 1)
         OP_TOALTSTACK
 
-        // right
         { m31_vec_from_bottom_gadget(len) }
 
-        // duplicate the right
         { dup_m31_vec_gadget(len) }
 
-        // hash the right
         { hash_m31_vec_gadget(len) }
         hash
-
+        // path left right right_hash | root_hash pos_(logn-1 .. 1)
         // put the left hash out and merge into the parent hash
         OP_FROMALTSTACK
         OP_SWAP OP_CAT hash
-
+        // path left right hash_of_left&right | root_hash pos_(logn-1 .. 1)
         { verify(logn - 1) }
     }
 }
 
 pub fn query_and_verify(len: usize, logn: usize) -> Script {
     script! {
-        // push the root hash to the altstack, first
+        // left right path root_hash pos
         OP_SWAP OP_TOALTSTACK
+        // left right path pos | root_hash
         { limb_to_be_bits_toaltstack_except_lowest_1bit(logn as u32) }
+        // left right path | root_hash pos_(logn-1 .. 1)
         { query_and_verify_internal(len, logn) }
     }
 }
 
 pub fn verify(path_len: usize) -> Script {
     script! {
+        // path left right hash_of_left&right | root_hash pos_(logn-1 .. 1)
         for _ in 0..path_len {
-            OP_HINT
+            OP_HINT // origin_xx
             OP_FROMALTSTACK OP_IF OP_SWAP OP_ENDIF
             OP_CAT hash
         }
