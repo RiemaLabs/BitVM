@@ -7,7 +7,6 @@ use std::path::Path;
 
 use crate::bigint::U254;
 use bitcoin_script::Script;
-use serde_json::Value;
 
 // use serde_json::Value;
 
@@ -529,7 +528,6 @@ mod test {
     use crate::bn254::fp254impl::Fp254Impl;
     use crate::bn254::fq::Fq;
     use crate::stark::*;
-    use bitcoin::opcodes::all::OP_TOALTSTACK;
     use bitcoin_script::builder::Block;
     use bitcoin_script::Script;
     use bitcoin_script::*;
