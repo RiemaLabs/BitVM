@@ -1,8 +1,7 @@
-use crate::dump::RelOp;
+use crate::dump::{RelOp, ValueExpr};
 use crate::pseudo::OP_NDUP;
 use crate::treepp::*;
 use crate::{bigint::BigIntImpl, dump::ConstraintBuilder};
-use bitcoin::script;
 use core::ops::{Mul, Rem, Sub};
 use num_bigint::BigUint;
 use num_traits::Num;
@@ -59,26 +58,84 @@ impl<const N_BITS: u32, const LIMB_SIZE: u32> BigIntImpl<N_BITS, LIMB_SIZE> {
 
     pub fn div3rem_inv(builder: &ConstraintBuilder) -> Script {
         let mut index = 0;
+        let head_inv_1 = builder.dump_assumption(
+            builder.build_stack_rel(
+                0,
+                builder.build_mod_expr(
+                    builder.build_symbolic_limb(0, Self::N_LIMBS as usize - 1),
+                    builder.build_constant(3),
+                ),
+                RelOp::Eq,
+            ),
+            &mut index,
+        );
+        let head_inv_2 = builder.dump_assumption(
+            builder.build_stack_rel(
+                1,
+                builder.build_div_expr(
+                    builder.build_symbolic_limb(0, Self::N_LIMBS as usize - 1),
+                    builder.build_constant(3),
+                ),
+                RelOp::Eq,
+            ),
+            &mut index,
+        );
+        let mut carry = builder.build_mod_expr(
+            builder.build_symbolic_limb(0, Self::N_LIMBS as usize - 1),
+            builder.build_constant(3),
+        );
+        fn new_inv(
+            builder: &ConstraintBuilder,
+            limb_index: usize,
+            carry: &mut ValueExpr,
+            index: &mut usize,
+        ) -> Script {
+            let new_expr = builder.build_add_expr(
+                builder.build_mul_expr(carry.clone(), builder.build_constant(1 << 29)),
+                builder.build_symbolic_limb(0, limb_index),
+            );
+            let inv_1 = builder.dump_assumption(
+                builder.build_stack_rel(
+                    0,
+                    builder.build_mod_expr(new_expr.clone(), builder.build_constant(3)),
+                    RelOp::Eq,
+                ),
+                index,
+            );
+            let inv_2 = builder.dump_assumption(
+                builder.build_stack_rel(
+                    1,
+                    builder.build_div_expr(new_expr.clone(), builder.build_constant(3)),
+                    RelOp::Eq,
+                ),
+                index,
+            );
+            *carry = builder.build_mod_expr(new_expr, builder.build_constant(3));
+            script! {
+                { inv_1 }
+                { inv_2 }
+            }
+        }
 
         script! {
             { Self::N_LIMBS - 1 } OP_ROLL
             0
-            { limb_div3_carry_inv(builder, Self::HEAD,8,&mut index) }
+            { limb_div3_carry(Self::HEAD) }
+            { head_inv_1 }
+            { head_inv_2 }
 
-            // stack: s_n .... s_0 -> stack: ..
-            // stack shape invariant :
-            // shape invariant -> value invariant
             for i in 1..Self::N_LIMBS as usize {
                 { Self::N_LIMBS } OP_ROLL
                 OP_SWAP
                 {
-                    limb_div3_carry_inv(
-                        builder,
-                        LIMB_SIZE,
-                        Self::N_LIMBS as usize - i - 1,
-                        &mut index,
-                    )
+                    limb_div3_carry(LIMB_SIZE)
                 }
+                { new_inv(
+                    builder,
+                    Self::N_LIMBS as usize - i - 1,
+                    &mut carry,
+                    &mut index,
+                )}
             }
         }
     }
@@ -398,12 +455,8 @@ pub fn limb_div3_carry(limb_size: u32) -> Script {
     }
 }
 
-pub fn limb_div3_carry_inv(
-    builder: &ConstraintBuilder,
-    limb_size: u32,
-    limb_id: usize,
-    index: &mut usize,
-) -> Script {
+pub fn limb_div3_carry_inv(builder: &ConstraintBuilder, limb_size: u32) -> Script {
+    let mut index = 0;
     let max_limb = (1 << limb_size) as i64;
 
     let x_quotient = max_limb / 3;
@@ -418,7 +471,105 @@ pub fn limb_div3_carry_inv(
         k += 1;
         cur *= 3;
     }
+    let carry_script = builder.dump_assertion(
+        builder.build_stack_rel(0, builder.build_symbolic(0), RelOp::Eq),
+        &mut index,
+    );
+    let limb_script = builder.dump_assertion(
+        builder.build_stack_rel(0, builder.build_symbolic(1), RelOp::Eq),
+        &mut index,
+    );
+    let remainder = builder.build_if_expr(
+        builder.build_rel(
+            builder.build_symbolic(0),
+            builder.build_constant(0),
+            RelOp::Eq,
+        ),
+        builder.build_constant(0),
+        builder.build_if_expr(
+            builder.build_rel(
+                builder.build_symbolic(0),
+                builder.build_constant(1),
+                RelOp::Eq,
+            ),
+            builder.build_constant(x_remainder as u128),
+            builder.build_constant(y_remainder as u128),
+        ),
+    );
+    let quotient = builder.build_if_expr(
+        builder.build_rel(
+            builder.build_symbolic(0),
+            builder.build_constant(0),
+            RelOp::Eq,
+        ),
+        builder.build_constant(0),
+        builder.build_if_expr(
+            builder.build_rel(
+                builder.build_symbolic(0),
+                builder.build_constant(1),
+                RelOp::Eq,
+            ),
+            builder.build_constant(x_quotient as u128),
+            builder.build_constant(y_quotient as u128),
+        ),
+    );
+    let carry_res = builder.dump_assertion(
+        builder.build_stack_rel(
+            0,
+            builder.build_add_expr(builder.build_symbolic(1), remainder),
+            RelOp::Eq,
+        ),
+        &mut index,
+    );
+    let alt_res = builder.dump_assertion(
+        builder.build_alt_stack_rel(0, quotient, RelOp::Eq),
+        &mut index,
+    );
+    let inv1 = builder.dump_assertion(
+        builder.build_rel(
+            builder.build_add_expr(
+                builder.build_mul_expr(builder.build_symbolic(0), builder.build_constant(1 << 29)),
+                builder.build_symbolic(1),
+            ),
+            builder.build_add_expr(
+                builder.build_mul_expr(builder.build_alt_stack(0), builder.build_constant(3)),
+                builder.build_stack(0),
+            ),
+            RelOp::Eq,
+        ),
+        &mut index,
+    );
+    let inv2 = builder.dump_assertion(
+        builder.build_rel(
+            builder.build_stack(0),
+            builder.build_mul_expr(builder.build_constant(2), builder.build_stack(1)),
+            RelOp::Lt,
+        ),
+        &mut index,
+    );
 
+    let inv1_res = builder.dump_assumption(
+        builder.build_rel(
+            builder.build_add_expr(
+                builder.build_mul_expr(builder.build_symbolic(0), builder.build_constant(1 << 29)),
+                builder.build_symbolic(1),
+            ),
+            builder.build_add_expr(
+                builder.build_mul_expr(builder.build_alt_stack(0), builder.build_constant(3)),
+                builder.build_stack(0),
+            ),
+            RelOp::Eq,
+        ),
+        &mut index,
+    );
+    let inv2_res = builder.dump_assumption(
+        builder.build_rel(
+            builder.build_stack(0),
+            builder.build_mul_expr(builder.build_constant(2), builder.build_stack(1)),
+            RelOp::Lt,
+        ),
+        &mut index,
+    );
     script! {
         1 2 3 6 9 18 27 54
         for _ in 0..k - 4 {
@@ -427,7 +578,7 @@ pub fn limb_div3_carry_inv(
         }
 
         { 2 * k } OP_ROLL
-
+        { carry_script }
         OP_DUP
         0 OP_GREATERTHAN
         OP_IF
@@ -443,14 +594,14 @@ pub fn limb_div3_carry_inv(
         OP_TOALTSTACK
 
         { 2 * k + 1 } OP_ROLL
-        {
-            builder.dump_assertion(
-                builder.build_stack_rel(0, builder.build_symbolic_limb(0, limb_id), RelOp::Eq),
-                index,
-            )
-        }
+        { limb_script }
         OP_ADD
-
+        { carry_res }
+        { alt_res }
+        // ignore basic range check, as it's obvious here.
+        // check assumption 108 and 109 here (ref. div3_inner_inner.bs)
+        { inv1 }
+        { inv2 }
         for _ in 0..2 * k - 2 {
             OP_2DUP OP_LESSTHANOREQUAL
             OP_IF
@@ -458,22 +609,86 @@ pub fn limb_div3_carry_inv(
             OP_ELSE
                 OP_NIP
             OP_ENDIF
-            {
-                builder.dump_assertion(
-                    builder.build_rel(
-                        builder.build_add_expr(
-                            builder.build_mul_expr(builder.build_alt_stack(0), builder.build_constant(3)),
-                            builder.build_stack(0),
-                        ),
-                        builder.build_symbolic_limb(0, limb_id),
-                        RelOp::Eq,
-                    ),
-                    index,
-                )
-            }
         }
-
+        { inv1_res }
+        { inv2_res }
         OP_NIP OP_NIP OP_FROMALTSTACK OP_SWAP
+    }
+}
+
+pub fn limb_div_carry_inner(builder: &ConstraintBuilder) -> Script {
+    let mut index = 0;
+    let remain1 = builder.dump_assertion(
+        builder.build_stack_rel(1, builder.build_symbolic(2), RelOp::Eq),
+        &mut index,
+    );
+    let remain2 = builder.dump_assertion(
+        builder.build_stack_rel(2, builder.build_symbolic(3), RelOp::Eq),
+        &mut index,
+    );
+    let stack_top = builder.dump_assertion(
+        builder.build_stack_rel(
+            0,
+            builder.build_if_expr(
+                builder.build_rel(
+                    builder.build_symbolic(1),
+                    builder.build_symbolic(0),
+                    RelOp::Le,
+                ),
+                builder.build_sub_expr(builder.build_symbolic(0), builder.build_symbolic(1)),
+                builder.build_symbolic(0),
+            ),
+            RelOp::Eq,
+        ),
+        &mut index,
+    );
+    let alt_stack = builder.dump_assertion(
+        builder.build_alt_stack_rel(
+            0,
+            builder.build_if_expr(
+                builder.build_rel(
+                    builder.build_symbolic(1),
+                    builder.build_symbolic(0),
+                    RelOp::Le,
+                ),
+                builder.build_add_expr(builder.build_symbolic(4), builder.build_symbolic(3)),
+                builder.build_symbolic(4),
+            ),
+            RelOp::Eq,
+        ),
+        &mut index,
+    );
+    let res_inv = builder.dump_assertion(
+        builder.build_rel(
+            builder.build_add_expr(
+                builder.build_symbolic(0),
+                builder.build_mul_expr(builder.build_constant(3), builder.build_symbolic(4)),
+            ),
+            builder.build_add_expr(
+                builder.build_stack(0),
+                builder.build_mul_expr(builder.build_alt_stack(0), builder.build_constant(3)),
+            ),
+            RelOp::Eq,
+        ),
+        &mut index,
+    );
+    let res_prop = builder.dump_assertion(
+        builder.build_rel(builder.build_stack(0), builder.build_symbolic(1), RelOp::Lt),
+        &mut index,
+    );
+    script! {
+        OP_2DUP OP_LESSTHANOREQUAL
+        OP_IF
+            OP_SWAP OP_SUB 2 OP_PICK OP_FROMALTSTACK OP_ADD OP_TOALTSTACK
+        OP_ELSE
+            OP_NIP
+        OP_ENDIF
+        { remain1 }
+        { remain2 }
+        { stack_top }
+        { alt_stack }
+        { res_inv }
+        { res_prop }
     }
 }
 

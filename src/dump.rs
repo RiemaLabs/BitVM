@@ -522,12 +522,14 @@ mod test {
     use crate::bigint::bits::{
         limb_to_be_bits, limb_to_be_bits_toaltstack, limb_to_le_bits, limb_to_le_bits_toaltstack,
     };
+    use crate::bigint::inv::{limb_div3_carry_inv, limb_div_carry_inner};
     use crate::bigint::sub::{limb_sub_borrow, limb_sub_noborrow};
     use crate::bigint::U254;
     use crate::bn254::curves::G1Projective;
     use crate::bn254::fp254impl::Fp254Impl;
     use crate::bn254::fq::Fq;
     use crate::stark::*;
+    use bitcoin::opcodes::all::OP_TOALTSTACK;
     use bitcoin_script::builder::Block;
     use bitcoin_script::Script;
     use bitcoin_script::*;
@@ -3419,10 +3421,7 @@ mod test {
                 } else {
                     builder.build_add_expr(
                         builder.build_symbolic_limb(0, i),
-                        builder.build_mod_expr(
-                            builder.build_mul_expr(carry, builder.build_constant(1 << 29)),
-                            builder.build_constant(3),
-                        ),
+                        builder.build_mul_expr(carry, builder.build_constant(1 << 29)),
                     )
                 };
                 builder.build_assertion(builder.build_stack_rel(
@@ -3439,8 +3438,9 @@ mod test {
             };
             dump_script(&script);
         }
-        fn inner() {
-            pre_process("../data/bigint/inv/div3_inner.bs");
+
+        fn inv() {
+            pre_process("../data/bigint/inv/div3_inv.bs");
             let mut builder = ConstraintBuilder::new();
             let mut carry = ValueExpr::Constant(0);
             for i in (0..U254::N_LIMBS as usize).rev() {
@@ -3449,10 +3449,7 @@ mod test {
                 } else {
                     builder.build_add_expr(
                         builder.build_symbolic_limb(0, i),
-                        builder.build_mod_expr(
-                            builder.build_mul_expr(carry, builder.build_constant(1 << 29)),
-                            builder.build_constant(3),
-                        ),
+                        builder.build_mul_expr(carry, builder.build_constant(1 << 29)),
                     )
                 };
                 builder.build_assertion(builder.build_stack_rel(
@@ -3464,46 +3461,276 @@ mod test {
             }
             let script = script! {
                 {U254::push_verification_meta(MetaType::SymbolicVar(0))}
-                {U254::div3()}
+                {U254::div3_inv(&builder)}
                 {add_assertions(&builder)}
             };
             dump_script(&script);
         }
+
+        fn inner() {
+            pre_process("../data/bigint/inv/div3_inner.bs");
+            let mut builder = ConstraintBuilder::new();
+            let mut index = 100;
+            let origin_value = builder.build_add_expr(
+                builder.build_mul_expr(builder.build_symbolic(0), builder.build_constant(1 << 29)),
+                builder.build_symbolic(1),
+            );
+            builder.build_assertion(builder.build_stack_rel(
+                0,
+                builder.build_mod_expr(origin_value.clone(), builder.build_constant(3)),
+                RelOp::Eq,
+            )); // res_mod
+            builder.build_assertion(builder.build_stack_rel(
+                1,
+                builder.build_div_expr(origin_value, builder.build_constant(3)),
+                RelOp::Eq,
+            )); // res_div
+            let script = script! {
+                {U254::push_verification_meta(MetaType::SingleSymbolicVar(1))}
+                {U254::push_verification_meta(MetaType::SingleSymbolicVar(0))}
+                { builder.dump_assumption(
+                    builder.build_and_rel(
+                        builder.build_rel(
+                            builder.build_symbolic(0),
+                            builder.build_constant(0),
+                            RelOp::Ge,
+                        ),
+                        builder.build_rel(
+                            builder.build_symbolic(0),
+                            builder.build_constant(2),
+                            RelOp::Le,
+                        ),
+                    ),
+                    &mut index,
+                ) }
+                { builder.dump_assumption(
+                    builder.build_and_rel(
+                        builder.build_rel(
+                            builder.build_symbolic(1),
+                            builder.build_constant(0),
+                            RelOp::Ge,
+                        ),
+                        builder.build_rel(
+                            builder.build_symbolic(1),
+                            builder.build_constant(1<<29),
+                            RelOp::Le,
+                        ),
+                    ),
+                    &mut index,
+                ) }
+                {limb_div3_carry_inv(&builder,29)}
+                {add_assertions(&builder)}
+            };
+            dump_script(&script);
+        }
+        fn inner_inner() {
+            pre_process("../data/bigint/inv/div3_inner_inner.bs");
+            let builder = ConstraintBuilder::new();
+            let mut index = 100;
+            let script = script! {
+                {U254::push_verification_meta(MetaType::SingleSymbolicVar(3))}
+                {U254::push_verification_meta(MetaType::SingleSymbolicVar(2))}
+                {U254::push_verification_meta(MetaType::SingleSymbolicVar(1))}
+                {U254::push_verification_meta(MetaType::SingleSymbolicVar(0))}
+                {U254::push_verification_meta(MetaType::SingleSymbolicVar(4))}
+                OP_TOALTSTACK
+                {builder.dump_assumption(builder.build_rel(builder.build_symbolic(0), builder.build_constant(1<<29), RelOp::Lt), &mut index)}
+                {builder.dump_assumption(builder.build_rel(builder.build_symbolic(1), builder.build_constant(1<<29), RelOp::Lt), &mut index)}
+                {builder.dump_assumption(builder.build_rel(builder.build_symbolic(2), builder.build_constant(1<<29), RelOp::Lt), &mut index)}
+                {builder.dump_assumption(builder.build_rel(builder.build_symbolic(3), builder.build_constant(1<<29), RelOp::Lt), &mut index)}
+                {builder.dump_assumption(builder.build_rel(builder.build_symbolic(0), builder.build_constant(0), RelOp::Ge), &mut index)}
+                {builder.dump_assumption(builder.build_rel(builder.build_symbolic(1), builder.build_constant(0), RelOp::Ge), &mut index)}
+                {builder.dump_assumption(builder.build_rel(builder.build_symbolic(2), builder.build_constant(0), RelOp::Ge), &mut index)}
+                {builder.dump_assumption(builder.build_rel(builder.build_symbolic(3), builder.build_constant(0), RelOp::Ge), &mut index)}
+                {builder.dump_assumption(
+                    builder.build_rel(
+                        builder.build_symbolic(1),
+                        builder.build_mul_expr(builder.build_symbolic(3), builder.build_constant(3)),
+                        RelOp::Eq,
+                    ),
+                    &mut index,
+                )}
+                {
+                    builder.dump_assumption(
+                        builder.build_rel(
+                            builder.build_symbolic(0),
+                            builder.build_mul_expr(builder.build_constant(2), builder.build_symbolic(1)),
+                            RelOp::Lt,
+                        ),
+                        &mut index,
+                    )
+                }
+                {limb_div_carry_inner(&builder)}
+            };
+            dump_script(&script);
+        }
         normal();
+        inv();
+        inner();
+        inner_inner();
     }
 
     #[test]
-    fn check_div3rem() {
-        pre_process("../data/bigint/inv/div3rem.bs");
-        let mut builder = ConstraintBuilder::new();
-        let mut carry = ValueExpr::Constant(0);
-        for i in (0..U254::N_LIMBS).rev() {
-            builder.build_assertion(builder.build_stack_rel(
-                (i + 1) as usize,
-                builder.build_add_expr(
-                    builder.build_div_expr(
-                        builder.build_symbolic_limb(0, i as usize),
-                        builder.build_constant(3),
-                    ),
-                    builder.build_mod_expr(
+    fn check_div3_rem() {
+        fn normal() {
+            pre_process("../data/bigint/inv/div3_rem.bs");
+            let mut builder = ConstraintBuilder::new();
+            let mut carry = ValueExpr::Constant(0);
+            for i in (0..U254::N_LIMBS as usize).rev() {
+                let expr = if i == U254::N_LIMBS as usize - 1 {
+                    builder.build_symbolic_limb(0, i)
+                } else {
+                    builder.build_add_expr(
+                        builder.build_symbolic_limb(0, i),
                         builder.build_mul_expr(carry, builder.build_constant(1 << 29)),
-                        builder.build_constant(3),
-                    ),
-                ),
-                RelOp::Eq,
-            ));
-            carry = builder.build_mod_expr(
-                builder.build_symbolic_limb(0, i as usize),
-                builder.build_constant(3),
-            );
+                    )
+                };
+                builder.build_assertion(builder.build_stack_rel(
+                    i + 1,
+                    builder.build_div_expr(expr.clone(), builder.build_constant(3)),
+                    RelOp::Eq,
+                ));
+                carry = builder.build_mod_expr(expr, builder.build_constant(3))
+            }
+            builder.build_assertion(builder.build_stack_rel(0, carry, RelOp::Eq));
+            let script = script! {
+                {U254::push_verification_meta(MetaType::SymbolicVar(0))}
+                {U254::div3rem()}
+                {add_assertions(&builder)}
+            };
+            dump_script(&script);
         }
-        builder.build_assertion(builder.build_stack_rel(0, carry, RelOp::Eq));
-        let script = script! {
-            {U254::push_verification_meta(MetaType::SymbolicVar(0))}
-            {U254::div3rem()}
-            {add_assertions(&builder)}
-        };
-        dump_script(&script);
+
+        fn inv() {
+            pre_process("../data/bigint/inv/div3_rem_inv.bs");
+            let mut builder = ConstraintBuilder::new();
+            let mut carry = ValueExpr::Constant(0);
+            for i in (0..U254::N_LIMBS as usize).rev() {
+                let expr = if i == U254::N_LIMBS as usize - 1 {
+                    builder.build_symbolic_limb(0, i)
+                } else {
+                    builder.build_add_expr(
+                        builder.build_symbolic_limb(0, i),
+                        builder.build_mul_expr(carry, builder.build_constant(1 << 29)),
+                    )
+                };
+                builder.build_assertion(builder.build_stack_rel(
+                    i + 1,
+                    builder.build_div_expr(expr.clone(), builder.build_constant(3)),
+                    RelOp::Eq,
+                ));
+                carry = builder.build_mod_expr(expr, builder.build_constant(3))
+            }
+            builder.build_assertion(builder.build_stack_rel(0, carry, RelOp::Eq));
+            let script = script! {
+                {U254::push_verification_meta(MetaType::SymbolicVar(0))}
+                {U254::div3rem_inv(&builder)}
+                {add_assertions(&builder)}
+            };
+            dump_script(&script);
+        }
+
+        fn inner() {
+            pre_process("../data/bigint/inv/div3_rem_inner.bs");
+            let mut builder = ConstraintBuilder::new();
+            let mut index = 100;
+            let origin_value = builder.build_add_expr(
+                builder.build_mul_expr(builder.build_symbolic(0), builder.build_constant(1 << 29)),
+                builder.build_symbolic(1),
+            );
+            builder.build_assertion(builder.build_stack_rel(
+                0,
+                builder.build_mod_expr(origin_value.clone(), builder.build_constant(3)),
+                RelOp::Eq,
+            )); // res_mod
+            builder.build_assertion(builder.build_stack_rel(
+                1,
+                builder.build_div_expr(origin_value, builder.build_constant(3)),
+                RelOp::Eq,
+            )); // res_div
+            let script = script! {
+                {U254::push_verification_meta(MetaType::SingleSymbolicVar(1))}
+                {U254::push_verification_meta(MetaType::SingleSymbolicVar(0))}
+                { builder.dump_assumption(
+                    builder.build_and_rel(
+                        builder.build_rel(
+                            builder.build_symbolic(0),
+                            builder.build_constant(0),
+                            RelOp::Ge,
+                        ),
+                        builder.build_rel(
+                            builder.build_symbolic(0),
+                            builder.build_constant(2),
+                            RelOp::Le,
+                        ),
+                    ),
+                    &mut index,
+                ) }
+                { builder.dump_assumption(
+                    builder.build_and_rel(
+                        builder.build_rel(
+                            builder.build_symbolic(1),
+                            builder.build_constant(0),
+                            RelOp::Ge,
+                        ),
+                        builder.build_rel(
+                            builder.build_symbolic(1),
+                            builder.build_constant(1<<29),
+                            RelOp::Le,
+                        ),
+                    ),
+                    &mut index,
+                ) }
+                {limb_div3_carry_inv(&builder,29)}
+                {add_assertions(&builder)}
+            };
+            dump_script(&script);
+        }
+        fn inner_inner() {
+            pre_process("../data/bigint/inv/div3_rem_inner_inner.bs");
+            let builder = ConstraintBuilder::new();
+            let mut index = 100;
+            let script = script! {
+                {U254::push_verification_meta(MetaType::SingleSymbolicVar(3))}
+                {U254::push_verification_meta(MetaType::SingleSymbolicVar(2))}
+                {U254::push_verification_meta(MetaType::SingleSymbolicVar(1))}
+                {U254::push_verification_meta(MetaType::SingleSymbolicVar(0))}
+                {U254::push_verification_meta(MetaType::SingleSymbolicVar(4))}
+                OP_TOALTSTACK
+                {builder.dump_assumption(builder.build_rel(builder.build_symbolic(0), builder.build_constant(1<<29), RelOp::Lt), &mut index)}
+                {builder.dump_assumption(builder.build_rel(builder.build_symbolic(1), builder.build_constant(1<<29), RelOp::Lt), &mut index)}
+                {builder.dump_assumption(builder.build_rel(builder.build_symbolic(2), builder.build_constant(1<<29), RelOp::Lt), &mut index)}
+                {builder.dump_assumption(builder.build_rel(builder.build_symbolic(3), builder.build_constant(1<<29), RelOp::Lt), &mut index)}
+                {builder.dump_assumption(builder.build_rel(builder.build_symbolic(0), builder.build_constant(0), RelOp::Ge), &mut index)}
+                {builder.dump_assumption(builder.build_rel(builder.build_symbolic(1), builder.build_constant(0), RelOp::Ge), &mut index)}
+                {builder.dump_assumption(builder.build_rel(builder.build_symbolic(2), builder.build_constant(0), RelOp::Ge), &mut index)}
+                {builder.dump_assumption(builder.build_rel(builder.build_symbolic(3), builder.build_constant(0), RelOp::Ge), &mut index)}
+                {builder.dump_assumption(
+                    builder.build_rel(
+                        builder.build_symbolic(1),
+                        builder.build_mul_expr(builder.build_symbolic(3), builder.build_constant(3)),
+                        RelOp::Eq,
+                    ),
+                    &mut index,
+                )}
+                {
+                    builder.dump_assumption(
+                        builder.build_rel(
+                            builder.build_symbolic(0),
+                            builder.build_mul_expr(builder.build_constant(2), builder.build_symbolic(1)),
+                            RelOp::Lt,
+                        ),
+                        &mut index,
+                    )
+                }
+                {limb_div_carry_inner(&builder)}
+            };
+            dump_script(&script);
+        }
+        normal();
+        inv();
+        inner();
+        inner_inner();
     }
 
     #[test]
