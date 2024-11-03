@@ -20,6 +20,7 @@ pub mod groth16;
 pub mod hash;
 pub mod pseudo;
 pub mod signatures;
+pub mod stark;
 pub mod u32;
 pub mod u4;
 
@@ -36,8 +37,8 @@ impl fmt::Display for FmtStack {
             if item.is_empty() {
                 write!(f, "    []    ")?;
             } else {
-            item.reverse();
-            write!(f, "0x{:8}", item.as_hex())?;
+                item.reverse();
+                write!(f, "0x{:8}", item.as_hex())?;
             }
             if iter.peek().is_some() {
                 if (index + 1) % f.width().unwrap_or(4) == 0 {
@@ -261,15 +262,14 @@ pub fn execute_script_as_chunks(
             },
             scripts.next().unwrap_or_else(|| unreachable!()),
             vec![], // Note: If you put a witness here make sure to adjust
-                                    // Exec::with_stack() to not overwrite it!
+            // Exec::with_stack() to not overwrite it!
             next_stack.clone(),
             next_altstack.clone(),
         )
         .expect("Failed to create Exec");
-        
+
         // Execute the current chunk.
-        while exec.exec_next().is_ok() {
-        }
+        while exec.exec_next().is_ok() {}
 
         if exec.result().unwrap().error.is_some() {
             let res = exec.result().unwrap();
@@ -281,7 +281,7 @@ pub fn execute_script_as_chunks(
                 final_stack: FmtStack(exec.stack().clone()),
                 remaining_script: exec.remaining_script().to_asm_string(),
                 stats: exec.stats().clone(),
-            }
+            };
         };
 
         chunk_stacks.push(exec.stack().len() + exec.altstack().len());
@@ -296,10 +296,12 @@ pub fn execute_script_as_chunks(
     }
     let final_exec = final_exec.unwrap_or_else(|| unreachable!());
     let res = final_exec.result().unwrap();
-    writeln!(stats_file,
+    writeln!(
+        stats_file,
         "intermediate stack transfer sizes: {:?}",
         chunk_stacks[0..chunk_stacks.len() - 1].to_vec()
-    ).expect("Unable to write into stats_file");
+    )
+    .expect("Unable to write into stats_file");
     ExecuteInfo {
         success: res.success,
         error: res.error.clone(),
@@ -309,7 +311,6 @@ pub fn execute_script_as_chunks(
         stats: final_exec.stats().clone(),
     }
 }
-
 
 pub fn execute_script_as_chunks_vs_normal(
     script: treepp::Script,
@@ -325,9 +326,16 @@ pub fn execute_script_as_chunks_vs_normal(
         total_script.extend(script.clone().into_bytes());
     }
     println!("chunk sizes: {:?}", chunk_sizes);
-    
+
     for i in 0..min(compiled_script.len(), total_script.len()) {
-        assert_eq!(compiled_script.as_bytes()[i], total_script[i], "Incorrect at position {}: compiled: {} total: {}", i, compiled_script.as_bytes()[i], total_script[i]);
+        assert_eq!(
+            compiled_script.as_bytes()[i],
+            total_script[i],
+            "Incorrect at position {}: compiled: {} total: {}",
+            i,
+            compiled_script.as_bytes()[i],
+            total_script[i]
+        );
     }
     //assert!(
     //    compiled_script.as_bytes() == total_script,
@@ -424,7 +432,7 @@ pub fn execute_script_as_chunks_vs_normal(
                 final_stack: FmtStack(exec.stack().clone()),
                 remaining_script: exec.remaining_script().to_asm_string(),
                 stats: exec.stats().clone(),
-            }
+            };
         };
 
         chunk_stacks.push(exec.stack().len() + exec.altstack().len());

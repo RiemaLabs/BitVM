@@ -8,7 +8,7 @@ use crate::bigint::u29x9::{
 use crate::bigint::U254;
 use crate::bn254::fq::Fq;
 use crate::bn254::utils::fq_to_bits;
-use crate::dump::ConstraintBuilder;
+use crate::dump::{ConstraintBuilder, RelOp, ValueExpr};
 use crate::pseudo::OP_256MUL;
 use crate::treepp::*;
 use ark_ff::{BigInteger, PrimeField};
@@ -1189,9 +1189,80 @@ pub trait Fp254Impl {
         }
     }
 
+    fn div2_inv(builder: &ConstraintBuilder) -> Script {
+        let mut index = 0;
+        let mut carry = ValueExpr::Constant(0);
+        let mut scripts = vec![];
+        for i in (0..U254::N_LIMBS).rev() {
+            scripts.push(builder.dump_assertion(
+                builder.build_stack_rel(
+                    (i + 1) as usize,
+                    builder.build_add_expr(
+                        builder.build_rshift_expr(
+                            builder.build_symbolic_limb(0, i as usize),
+                            builder.build_constant(1),
+                        ),
+                        builder.build_mul_expr(carry, builder.build_constant(1 << 28)),
+                    ),
+                    RelOp::Eq,
+                ),
+                &mut index,
+            ));
+            carry = builder.build_mod_expr(
+                builder.build_symbolic_limb(0, i as usize),
+                builder.build_constant(2),
+            );
+        }
+        scripts.push(
+            builder.dump_assertion(
+                builder.build_stack_rel(
+                    0,
+                    builder.build_mod_expr(
+                        builder.build_symbolic_limb(0, 0),
+                        builder.build_constant(2),
+                    ),
+                    RelOp::Eq,
+                ),
+                &mut index,
+            ),
+        );
+        script! {
+            { U254::div2rem() }
+            for i in 0..scripts.len(){
+                { scripts[i].clone() }
+            }
+            OP_IF
+                { U254::push_hex(Self::P_PLUS_ONE_DIV2) }
+                { Self::add(1, 0) }
+            OP_ENDIF
+        }
+    }
+
     fn div3() -> Script {
         script! {
             { U254::div3rem() }
+            OP_DUP
+            0 OP_GREATERTHAN
+            OP_IF
+                OP_1SUB
+                OP_IF
+                    { U254::push_hex(Self::P_PLUS_TWO_DIV3) }
+                    { Self::add(1, 0) }
+                OP_ELSE
+                    { U254::push_hex(Self::TWO_P_PLUS_ONE_DIV3) }
+                    { Self::add(1, 0) }
+                OP_ENDIF
+            OP_ELSE
+                OP_DROP
+            OP_ENDIF
+        }
+    }
+
+    fn div3_inv(builder: &ConstraintBuilder) -> Script {
+        let res = U254::div3rem_inv(builder);
+
+        script! {
+            { res }
             OP_DUP
             0 OP_GREATERTHAN
             OP_IF
@@ -1214,7 +1285,7 @@ pub trait Fp254Impl {
     //  ⌊2⁻²⋅B₇⌋ + 2⁶⋅B₈  + 2¹⁴⋅B₉  + 2²²⋅❨B₁₀ᵐᵒᵈ2⁷❩
     // ⌊2⁻⁷⋅B₁₀⌋ + 2¹⋅B₁₁ + 2⁹⋅B₁₂  + 2¹⁷⋅B₁₃ + 2²⁵⋅❨B₁₄ᵐᵒᵈ2⁴❩
     // ⌊2⁻⁴⋅B₁₄⌋ + 2⁴⋅B₁₅ + 2¹²⋅B₁₆ + 2²⁰⋅B₁₇ + 2²⁸⋅❨B₁₈ᵐᵒᵈ2¹❩
-    // ⌊2⁻¹⋅B₁₈⌋ + 2⁷⋅B₁₉ + 2¹⁵⋅B₂₀ + 2²³⋅❨B₂₁ᵐᵒᵈ2⁶❩
+    // ⌊2⁻¹⋅B₁₈⌋ + 2    ⁷⋅B₁₉ + 2¹⁵⋅B₂₀ + 2²³⋅❨B₂₁ᵐᵒᵈ2⁶❩
     // ⌊2⁻⁶⋅B₂₁⌋ + 2²⋅B₂₂ + 2¹⁰⋅B₂₃ + 2¹⁸⋅B₂₄ + 2²⁶⋅❨B₂₅ᵐᵒᵈ2³❩
     // ⌊2⁻³⋅B₂₅⌋ + 2⁵⋅B₂₆ + 2¹³⋅B₂₇ + 2²¹⋅B₂₈
     //            2⁰⋅B₂₉ + 2⁸⋅B₃₀  + 2¹⁶⋅B₃₁

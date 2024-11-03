@@ -1,5 +1,3 @@
-use bitcoin::opcodes::all::OP_ADD;
-
 use crate::bigint::BigIntImpl;
 use crate::dump::{ConstraintBuilder, RelOp, ValueExpr};
 use crate::treepp::*;
